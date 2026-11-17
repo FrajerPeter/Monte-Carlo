@@ -109,7 +109,7 @@ class MetricsAndPlotTests(unittest.TestCase):
             np.array([0.15, 0.20]), np.eye(2), 10, 30,
             np.random.default_rng(22),
         )
-        with TemporaryDirectory() as temp_dir:
+        with TemporaryDirectory(dir=Path(mc.__file__).resolve().parent) as temp_dir:
             fan = Path(temp_dir) / "fan.png"
             distribution = Path(temp_dir) / "distribution.png"
             mc.plot_fan_chart(paths, ["AAA", "BBB"], fan)
@@ -133,7 +133,7 @@ class MainIntegrationTests(unittest.TestCase):
         columns = pd.MultiIndex.from_product([["Close"], tickers])
         raw = pd.DataFrame(price_values, index=dates, columns=columns)
 
-        with TemporaryDirectory() as temp_dir:
+        with TemporaryDirectory(dir=Path(mc.__file__).resolve().parent) as temp_dir:
             output_dir = Path(temp_dir) / "results"
             patched = {
                 "TICKERS": tickers,
