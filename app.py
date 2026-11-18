@@ -2112,6 +2112,10 @@ elif analysis:
             "P. prekročenia poklesu",
             f"{np.mean(historical_drawdowns < -max_drawdown_limit):.1%}",
         )
+        stress_indices = [
+            simulation["tickers"].index(ticker)
+            for ticker in simulation["portfolio_tickers"]
+        ]
         historical_portfolio_rows = []
         for strategy, weights in simulation["portfolio_weights"].items():
             stressed_asset_values = simulation["historical_stress_terminal_relative"][:, stress_indices]
