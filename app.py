@@ -16,6 +16,7 @@ import unicodedata
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 import yfinance as yf
 from reportlab.lib import colors
@@ -1537,66 +1538,72 @@ def make_portfolio_distribution(
 
     bin_edges = np.linspace(x_min, x_max, 61)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
-    visible_baseline = baseline_values[(baseline_values >= x_min) & (baseline_values <= x_max)]
-    visible_comparison = comparison_values[
-        (comparison_values >= x_min) & (comparison_values <= x_max)
-    ]
-    baseline_counts, _ = np.histogram(visible_baseline, bins=bin_edges)
-    comparison_counts, _ = np.histogram(visible_comparison, bins=bin_edges)
-    peak_baseline_index = int(np.argmax(baseline_counts))
-    peak_comparison_index = int(np.argmax(comparison_counts))
-    peak_baseline = float(bin_centers[peak_baseline_index])
-    peak_comparison = float(bin_centers[peak_comparison_index])
-    max_scenario_count = int(max(baseline_counts.max(), comparison_counts.max()))
-
-    figure = go.Figure()
-    # Draw the orange distribution first so the translucent blue distribution stays visible above it.
-    figure.add_trace(
-        go.Histogram(
-            x=visible_comparison,
-            xbins={"start": x_min, "end": x_max, "size": bin_edges[1] - bin_edges[0]},
-            name=comparison_label,
-            marker={"color": "#f0a23b", "line": {"color": "rgba(255,255,255,0.22)", "width": 0.35}},
-            opacity=0.58,
-            hovertemplate=f"Hodnota {symbol}%{{x:,.0f}}<br>Počet scenárov %{{y}}<extra>{comparison_label}</extra>",
-        )
-    )
-    figure.add_trace(
-        go.Histogram(
-            x=visible_baseline,
-            xbins={"start": x_min, "end": x_max, "size": bin_edges[1] - bin_edges[0]},
-            name=baseline_label,
-            marker={"color": "#4c9be8", "line": {"color": "rgba(255,255,255,0.3)", "width": 0.35}},
-            opacity=0.48,
-            hovertemplate=f"Hodnota {symbol}%{{x:,.0f}}<br>Počet scenárov %{{y}}<extra>{baseline_label}</extra>",
-        )
-    )
-    figure.add_vline(x=investment, line_dash="dash", line_color="#d55e00", line_width=2)
-    figure.add_vline(x=peak_comparison, line_dash="dot", line_color="#b86a00", line_width=2)
-    figure.add_vline(x=peak_baseline, line_dash="dot", line_color="#246da8", line_width=2)
-    for peak_x, peak_y, label, color, symbol_shape in (
-        (peak_comparison, int(comparison_counts[peak_comparison_index]), f"Vrchol · {comparison_label}", "#b86a00", "diamond"),
-        (peak_baseline, int(baseline_counts[peak_baseline_index]), f"Vrchol · {baseline_label}", "#246da8", "star"),
+    distributions = []
+    for values, label, color in (
+        (baseline_values, baseline_label, "#4c9be8"),
+        (comparison_values, comparison_label, "#f0a23b"),
     ):
+        visible_values = values[(values >= x_min) & (values <= x_max)]
+        counts, _ = np.histogram(visible_values, bins=bin_edges)
+        proportions = counts / max(len(visible_values), 1) * 100.0
+        distributions.append((label, color, proportions))
+
+    plotted_max = max(float(np.max(item[2], initial=0.0)) for item in distributions)
+    y_max = max(plotted_max * 1.1, 1.0)
+    figure = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.12,
+        subplot_titles=[baseline_label, comparison_label],
+    )
+    for row, (label, color, proportions) in enumerate(distributions, start=1):
         figure.add_trace(
             go.Scatter(
-                x=[peak_x],
-                y=[peak_y],
-                mode="markers",
-                marker={"symbol": symbol_shape, "size": 11, "color": color, "line": {"color": "white", "width": 1}},
+                x=bin_centers,
+                y=proportions,
+                mode="lines",
+                line={"color": color, "width": 3, "shape": "hvh"},
                 name=label,
-                hovertemplate=f"{label}<br>Hodnota {symbol}%{{x:,.0f}}<br>Počet scenárov %{{y}}<extra></extra>",
-            )
+                showlegend=False,
+                hovertemplate=f"Hodnota {symbol}%{{x:,.0f}}<br>Podiel zobrazených scenárov %{{y:.2f}}%<extra></extra>",
+            ),
+            row=row,
+            col=1,
+        )
+        figure.add_vline(
+            x=investment,
+            line_dash="dash",
+            line_color="#d55e00",
+            row=row,
+            col=1,
+        )
+        figure.update_yaxes(
+            title_text="Podiel scenárov (%)",
+            range=[0, y_max],
+            tick0=0,
+            dtick=max(0.5, _nice_tick_step(y_max, target_ticks=5)),
+            ticksuffix="%",
+            gridcolor="rgba(128,128,128,0.2)",
+            row=row,
+            col=1,
         )
     figure.add_trace(
-        go.Scatter(x=[None], y=[None], mode="lines", line={"color": "#d55e00", "dash": "dash", "width": 2}, name="Počiatočný vklad")
+        go.Scatter(
+            x=[None],
+            y=[None],
+            mode="lines",
+            line={"color": "#d55e00", "dash": "dash", "width": 2},
+            name="Počiatočný vklad",
+        ),
+        row=1,
+        col=1,
     )
     figure.update_layout(
         title=chart_title,
-        barmode="overlay",
-        legend={"orientation": "h", "y": 1.14, "x": 0, "xanchor": "left"},
-        margin={"t": 105, "b": 60, "l": 75, "r": 25},
-        height=440,
+        legend={"orientation": "h", "y": 1.08, "x": 0, "xanchor": "left"},
+        margin={"t": 125, "b": 60, "l": 80, "r": 25},
+        height=600,
     )
     x_tick_step = _nice_tick_step(x_max - x_min, target_ticks=10)
     figure.update_xaxes(
@@ -1606,17 +1613,11 @@ def make_portfolio_distribution(
         tickprefix=symbol,
         tickformat=",.0f",
         title_text=f"Hodnota ({symbol})",
-        nticks=11,
         showgrid=True,
         gridcolor="rgba(128,128,128,0.12)",
         zeroline=False,
-    )
-    figure.update_yaxes(
-        range=[0, max_scenario_count * 1.12],
-        tick0=0,
-        dtick=max(1.0, _nice_tick_step(max_scenario_count, target_ticks=8)),
-        title_text="Počet scenárov",
-        gridcolor="rgba(128,128,128,0.2)",
+        row=2,
+        col=1,
     )
     return figure
 
@@ -2583,9 +2584,9 @@ elif analysis:
                 config={"displaylogo": False},
             )
             st.caption(
-                "Oranžové rozdelenie je vykreslené vzadu, modré polopriehľadne navrchu. Diamant a "
-                "hviezdička označujú najčastejší interval (vrchol) každej série. Prerušovaná čiara "
-                "označuje počiatočný vklad; najvzdialenejšie extrémy môžu byť mimo osi."
+                "Každý panel ukazuje vlastné rovnomerne vážené portfólio. Obe majú rovnaké osi a "
+                "mierku; počiatočný vklad je prerušovaná čiara. Zobrazené je hlavné pásmo výsledkov, "
+                "najvzdialenejšie extrémy môžu byť mimo osi."
             )
 
     assets_tab, portfolio_tab, stress_tab, backtest_tab, export_tab = st.tabs(
@@ -2735,8 +2736,8 @@ elif analysis:
             config={"displaylogo": False},
         )
         st.caption(
-            "Oranžová séria je vzadu a modrá priehľadná navrchu; diamant a hviezdička označujú vrcholy. "
-            "Obe série používajú rovnaké scenáre, vklad a osi."
+            "Obrysové krivky majú rovnaký vklad a rovnaké simulované scenáre. Osa Y ukazuje podiel "
+            "zobrazených scenárov v intervale; najvzdialenejšie extrémy môžu byť mimo osi."
         )
 
     with stress_tab:
