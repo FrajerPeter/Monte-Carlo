@@ -1409,17 +1409,52 @@ def make_fan_chart(
     return figure
 
 
+def _nice_tick_step(span: float, target_ticks: int = 10) -> float:
+    """Choose a readable 1/2/2.5/5/10 tick interval for a numeric axis."""
+    if not np.isfinite(span) or span <= 0:
+        return 1.0
+    rough = span / max(target_ticks, 1)
+    magnitude = 10 ** math.floor(math.log10(rough))
+    fraction = rough / magnitude
+    nice_fraction = next(
+        (candidate for candidate in (1.0, 2.0, 2.5, 5.0, 10.0) if fraction <= candidate),
+        10.0,
+    )
+    return nice_fraction * magnitude
+
+
 def make_distribution_chart(
     terminal_values: np.ndarray,
     investment: float,
     ticker: str,
     symbol: str,
 ) -> go.Figure:
-    median_value = float(np.median(terminal_values))
+    values = np.asarray(terminal_values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        raise ValueError("Na vykreslenie rozdelenia nie sú dostupné konečné hodnoty.")
+    median_value = float(np.median(values))
+    x_min, x_max = np.quantile(values, [0.005, 0.995])
+    x_min = min(float(x_min), float(investment), median_value)
+    x_max = max(float(x_max), float(investment), median_value)
+    if x_max <= x_min:
+        padding = max(abs(x_min) * 0.05, 1.0)
+        x_min -= padding
+        x_max += padding
+    else:
+        padding = (x_max - x_min) * 0.025
+        x_min -= padding
+        x_max += padding
+    visible = values[(values >= x_min) & (values <= x_max)]
+    bin_count = 60
+    bin_width = (x_max - x_min) / bin_count
+    counts, _ = np.histogram(visible, bins=bin_count, range=(x_min, x_max))
+    x_tick_step = _nice_tick_step(x_max - x_min, target_ticks=11)
+    y_tick_step = max(1.0, _nice_tick_step(float(max(counts, default=1)), target_ticks=8))
     figure = go.Figure(
         go.Histogram(
-            x=terminal_values,
-            nbinsx=40,
+            x=visible,
+            xbins={"start": x_min, "end": x_max, "size": bin_width},
             marker={"color": "#4c9be8", "line": {"color": "rgba(255,255,255,0.35)", "width": 0.5}},
             opacity=0.88,
             name="Simulované hodnoty",
@@ -1454,8 +1489,22 @@ def make_distribution_chart(
         margin={"t": 100, "b": 60, "l": 65, "r": 25},
         height=400,
     )
-    figure.update_xaxes(tickprefix=symbol, tickformat=",.0f", nticks=8, showgrid=False)
-    figure.update_yaxes(gridcolor="rgba(128,128,128,0.2)")
+    figure.update_xaxes(
+        range=[x_min, x_max],
+        tick0=math.floor(x_min / x_tick_step) * x_tick_step,
+        dtick=x_tick_step,
+        tickprefix=symbol,
+        tickformat=",.0f",
+        showgrid=True,
+        gridcolor="rgba(128,128,128,0.12)",
+        zeroline=False,
+    )
+    figure.update_yaxes(
+        rangemode="tozero",
+        tick0=0,
+        dtick=y_tick_step,
+        gridcolor="rgba(128,128,128,0.2)",
+    )
     return figure
 
 
@@ -2504,6 +2553,11 @@ elif analysis:
                 ),
                 width="stretch",
                 config={"displaylogo": False},
+            )
+            st.caption(
+                "Osi majú hustejšie dieliky prispôsobené rozsahu investície. Rozsah osi vychádza "
+                "z 0,5.–99,5. percentilu a vždy zahŕňa počiatočný vklad aj medián; "
+                "najvzdialenejšie extrémy mimo zobrazeného rozsahu sú vynechané."
             )
         with comparison_tab:
             st.dataframe(
