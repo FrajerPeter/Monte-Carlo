@@ -1517,23 +1517,46 @@ def make_portfolio_distribution(
     baseline_label: str = "Rovnomerné váhy",
     chart_title: str = "Konečná hodnota portfólia",
 ) -> go.Figure:
+    baseline_values = investment * (1.0 + np.asarray(equal_returns, dtype=float))
+    comparison_values = investment * (1.0 + np.asarray(comparison_returns, dtype=float))
+    baseline_values = baseline_values[np.isfinite(baseline_values)]
+    comparison_values = comparison_values[np.isfinite(comparison_values)]
+    if baseline_values.size == 0 or comparison_values.size == 0:
+        raise ValueError("Na porovnanie portfólií nie sú dostupné konečné scenáre.")
+
+    all_values = np.concatenate([baseline_values, comparison_values])
+    x_min, x_max = np.quantile(all_values, [0.005, 0.995])
+    x_min = min(float(x_min), float(investment))
+    x_max = max(float(x_max), float(investment))
+    if x_max <= x_min:
+        padding = max(abs(x_min) * 0.05, 1.0)
+    else:
+        padding = (x_max - x_min) * 0.025
+    x_min -= padding
+    x_max += padding
+
+    bin_edges = np.linspace(x_min, x_max, 61)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
     figure = go.Figure()
-    figure.add_trace(
-        go.Histogram(
-            x=investment * (1.0 + equal_returns),
-            nbinsx=55,
-            name=baseline_label,
-            opacity=0.65,
+    plotted_max = 0.0
+    for values, label, color, dash in (
+        (baseline_values, baseline_label, "#4c9be8", "solid"),
+        (comparison_values, comparison_label, "#f0a23b", "dash"),
+    ):
+        visible_values = values[(values >= x_min) & (values <= x_max)]
+        counts, _ = np.histogram(visible_values, bins=bin_edges)
+        proportions = counts / max(len(visible_values), 1) * 100.0
+        plotted_max = max(plotted_max, float(np.max(proportions, initial=0.0)))
+        figure.add_trace(
+            go.Scatter(
+                x=bin_centers,
+                y=proportions,
+                mode="lines",
+                line={"color": color, "width": 3, "dash": dash, "shape": "hvh"},
+                name=label,
+                hovertemplate=f"Hodnota {symbol}%{{x:,.0f}}<br>Podiel scenárov %{{y:.2f}}%<extra>{label}</extra>",
+            )
         )
-    )
-    figure.add_trace(
-        go.Histogram(
-            x=investment * (1.0 + comparison_returns),
-            nbinsx=55,
-            name=comparison_label,
-            opacity=0.65,
-        )
-    )
     figure.add_vline(
         x=investment,
         line_dash="dash",
@@ -1549,14 +1572,30 @@ def make_portfolio_distribution(
     figure.update_layout(
         title=chart_title,
         xaxis_title=f"Hodnota ({symbol})",
-        yaxis_title="Počet scenárov",
-        barmode="overlay",
+        yaxis_title="Podiel scenárov v intervale (%)",
         legend={"orientation": "h", "y": 1.14, "x": 0, "xanchor": "left"},
         margin={"t": 95, "b": 60, "l": 65, "r": 25},
         height=400,
     )
-    figure.update_xaxes(tickprefix=symbol, tickformat=",.0f", nticks=8, showgrid=False)
-    figure.update_yaxes(gridcolor="rgba(128,128,128,0.2)")
+    x_tick_step = _nice_tick_step(x_max - x_min, target_ticks=10)
+    y_tick_step = max(0.5, _nice_tick_step(plotted_max, target_ticks=7))
+    figure.update_xaxes(
+        range=[x_min, x_max],
+        tick0=math.floor(x_min / x_tick_step) * x_tick_step,
+        dtick=x_tick_step,
+        tickprefix=symbol,
+        tickformat=",.0f",
+        showgrid=True,
+        gridcolor="rgba(128,128,128,0.12)",
+        zeroline=False,
+    )
+    figure.update_yaxes(
+        rangemode="tozero",
+        tick0=0,
+        dtick=y_tick_step,
+        ticksuffix="%",
+        gridcolor="rgba(128,128,128,0.2)",
+    )
     return figure
 
 
@@ -2496,9 +2535,9 @@ elif analysis:
         with st.container(border=True):
             st.subheader(f"Čo sa zmení po pridaní {chart_ticker}?")
             st.caption(
-                "Porovnávam rovnomerne vážené portfólio bez vybraného tickeru a s ním "
-                "v tých istých simulovaných scenároch a po rovnakých odhadovaných nákladoch. "
-                "Je to porovnanie váh, nie garancia ani optimalizovaná alokácia."
+                f"Bez {chart_ticker}: celá počiatočná suma je rozdelená rovnomerne medzi ostatné tickery. "
+                f"S {chart_ticker}: tá istá suma je rozdelená rovnomerne medzi všetky tickery vrátane {chart_ticker}; "
+                "nejde o dodatočný vklad. Obe verzie používajú rovnaké simulované scenáre a náklady."
             )
             if with_cvar < without_cvar:
                 st.success(f"V tomto modeli pridanie {chart_ticker} znížilo priemernú stratu v najhorších 5 % scenárov.")
@@ -2520,6 +2559,10 @@ elif analysis:
                 ),
                 width="stretch",
                 config={"displaylogo": False},
+            )
+            st.caption(
+                "Obrysové čiary zobrazujú podiel scenárov v jednotlivých hodnotových intervaloch; "
+                "rozsah osi vychádza z hlavného pásma výsledkov a môže vynechať najvzdialenejšie extrémy."
             )
 
     assets_tab, portfolio_tab, stress_tab, backtest_tab, export_tab = st.tabs(
@@ -2667,6 +2710,10 @@ elif analysis:
             ),
             width="stretch",
             config={"displaylogo": False},
+        )
+        st.caption(
+            "Obrysové krivky majú rovnaký vklad a rovnaké simulované scenáre. Osa Y ukazuje podiel "
+            "zobrazených scenárov v intervale; najvzdialenejšie extrémy môžu byť mimo osi."
         )
 
     with stress_tab:
