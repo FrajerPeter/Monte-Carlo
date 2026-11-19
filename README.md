@@ -19,7 +19,10 @@ Ak sa Streamlit už inštaloval, vynechať vytvorenie prostredia aj `pip install
 
 ## Ovládanie aplikácie
 
-- Pridaj jeden až desať tickerov a vyber benchmark, horizont, menu účtu a počiatočnú investíciu.
+- Na úvodnej obrazovke stlač **Vyskúšať demo s Visa**, ak chceš rýchlo vidieť porovnanie AAPL/MSFT/V. Potom spusti výpočet v bočnom paneli.
+- Vyhľadaj akciu podľa názvu alebo tickeru v katalógu 2 339 veľkých a mega-cap titulov, prípadne zadaj ticker ručne. Formáty `Visa (V)`, `Visa` aj `V` sa rozpoznajú; do jednej simulácie môžeš pridať najviac desať tickerov.
+- Katalóg je lokálna snímka z 18. 11. 2026. Obsahuje aktívne primárne záznamy klasifikované ako Mega Cap alebo Large Cap v [FinanceDatabase](https://github.com/JerBouma/FinanceDatabase); nejde o presne zoradený živý rebríček prvých 1 000 podľa kapitalizácie. Podrobnosti sú v `data/README.md`.
+- Vyber benchmark, horizont, menu účtu a počiatočnú investíciu.
 - Vyber 1 000, 5 000 alebo 10 000 simulácií a jeden z piatich modelov.
 - Nastav bezrizikovú sadzbu, zmenšenie historického drifta, neistotu odhadu drifta, rizikový limit, obmedzenia váh a odhad nákladov.
 - Stlač **Spustiť simuláciu**. Po zmene nastavení klikni znovu, aby sa prepočítali výsledky.
@@ -48,6 +51,8 @@ Fan chart ukazuje až 1 000 sivých ukážkových ciest, 10., 50. a 90. percenti
 - Rovnomerné portfólio, približné maximum Sharpe, minimum volatility a minimum historického CVaR. Váhy sa hľadajú medzi 50 000 náhodnými prípustnými long-only kandidátmi; výsledok nie je garantované globálne optimum.
 - Walk-forward porovnanie každého modelu: 3 roky tréningových dát, 63 obchodných dní prognózy a 21-dňový posun. Zobrazuje pokrytie 10.–90. percentilu, presnosť smeru, chybu mediánu a šírku pásma.
 - Hypotetický jednorazový pokles, aj historický najhorší 63-dňový spoločný blok; v historickom teste sa po bloku simuluje zvyšok zvoleného horizontu.
+- Porovnanie rovnomerne váženého portfólia pred a po pridaní vybranej akcie na tých istých simulovaných cestách.
+- Prehľad zdroja, dátumov a počtu spoločných denných pozorovaní; neúplné cenové dátumy sa pri zosúladení vynechávajú.
 - CSV súbory pre akcie, váhy, portfóliá a spätný test; súhrnný PDF report.
 
 ## Obmedzenia
@@ -60,7 +65,11 @@ Yahoo Finance je dátovým zdrojom aplikácie, nie garantovaným produkčným fe
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Testy existujúcich dátových a portfóliových pomocných funkcií používajú syntetické dáta a nesťahujú Yahoo Finance. Nové simulačné modely boli navyše overené syntetickým smoke testom bez sieťového sťahovania dát.
+Testy pomocných funkcií používajú syntetické dáta alebo lokálny katalóg a nesťahujú Yahoo Finance. Zahŕňajú vyhľadanie Visa podľa názvu/tickeru aj ručné zadanie `Visa (V)`.
+
+## Codex agenti
+
+V `.codex/agents/` sú projektové read-only profily pre kvantitatívnu analýzu, dátovú vedu, UX kontrolu, code review a stručné odovzdanie kontextu. Sú odvodené z [VoltAgent/awesome-codex-subagents](https://github.com/VoltAgent/awesome-codex-subagents) a použiteľné pri explicitnom delegovaní v Codexe. Profily nepúšťajú automaticky ďalších agentov. Licencia MIT a pôvod sú zaznamenané v `.codex/agents/README.md`.
 
 ## Spustenie pôvodného skriptu
 

@@ -23,6 +23,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from stock_catalog import add_ticker_symbols, load_stock_catalog, search_stock_catalog
 
 
 TRADING_DAYS_PER_YEAR = 252
@@ -36,6 +37,7 @@ BACKTEST_TRAIN_DAYS = 756
 BACKTEST_STEP_DAYS = 21
 BACKTEST_SIMULATIONS = 2_000
 FAN_CHART_PATH_LIMIT = 1_000
+ANALYSIS_SCHEMA_VERSION = 2
 HORIZONS = {
     "3 mesiace": 63,
     "6 mesiacov": 126,
@@ -64,6 +66,7 @@ st.set_page_config(
     page_title="Monte Carlo akcií | Scenárová analýza",
     page_icon="📈",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 
@@ -94,12 +97,26 @@ def _extract_close(downloaded: pd.DataFrame, symbols: tuple[str, ...]) -> pd.Dat
     if missing:
         raise RuntimeError("Chýbajú ceny pre: " + ", ".join(missing))
     prices = prices.loc[:, list(wanted)].apply(pd.to_numeric, errors="coerce")
-    prices = (
-        prices.loc[~prices.index.duplicated(keep="last")]
-        .sort_index()
-        .dropna(how="any")
-    )
-    return prices.loc[(prices > 0).all(axis=1)]
+    source_rows = int(len(prices))
+    duplicate_dates = int(prices.index.duplicated(keep="last").sum())
+    prices = prices.loc[~prices.index.duplicated(keep="last")].sort_index()
+    missing_by_ticker = prices.isna().sum().astype(int).to_dict()
+    incomplete_dates = int(prices.isna().any(axis=1).sum())
+    invalid_by_ticker = (prices.le(0) & prices.notna()).sum().astype(int).to_dict()
+    complete_prices = prices.dropna(how="any")
+    complete_prices = complete_prices.loc[(complete_prices > 0).all(axis=1)]
+    complete_prices.attrs["source_rows"] = source_rows
+    complete_prices.attrs["duplicate_dates"] = duplicate_dates
+    complete_prices.attrs["incomplete_dates"] = incomplete_dates
+    complete_prices.attrs["missing_by_ticker"] = missing_by_ticker
+    complete_prices.attrs["invalid_by_ticker"] = invalid_by_ticker
+    return complete_prices
+
+
+@st.cache_data(show_spinner=False)
+def get_stock_catalog() -> pd.DataFrame:
+    """Read the bundled global large-cap catalog once per Streamlit process."""
+    return load_stock_catalog()
 
 
 @st.cache_data(ttl=30 * 60, max_entries=32, show_spinner=False)
@@ -200,11 +217,16 @@ def download_market_prices(
             usd_rates[base] = download_usd_per_currency(base)
 
     aligned: dict[str, pd.Series] = {}
+    fx_forward_filled_by_currency: dict[str, int] = {}
     for base in bases:
         if base == "USD":
             aligned[base] = pd.Series(1.0, index=native_prices.index)
         else:
-            rate = usd_rates[base].reindex(native_prices.index).ffill()
+            raw_rate = usd_rates[base].reindex(native_prices.index)
+            rate = raw_rate.ffill()
+            fx_forward_filled_by_currency[base] = int(
+                (raw_rate.isna() & rate.notna()).sum()
+            )
             aligned[base] = rate
 
     account_usd = aligned[account_currency]
@@ -232,6 +254,15 @@ def download_market_prices(
             f"Po zosúladení cien a menových kurzov zostalo iba {len(converted)} dní; "
             "potrebných je aspoň 61. Skús odstrániť ticker s krátkou históriou."
         )
+    converted.attrs["data_quality"] = {
+        "source_rows": int(native_prices.attrs.get("source_rows", len(native_prices))),
+        "duplicate_dates": int(native_prices.attrs.get("duplicate_dates", 0)),
+        "incomplete_dates": int(native_prices.attrs.get("incomplete_dates", 0)),
+        "missing_by_ticker": native_prices.attrs.get("missing_by_ticker", {}),
+        "invalid_by_ticker": native_prices.attrs.get("invalid_by_ticker", {}),
+        "fx_forward_filled_by_currency": fx_forward_filled_by_currency,
+        "usable_rows": int(len(converted)),
+    }
     return converted, currencies, spot_rates, fx_stats
 
 
@@ -1285,13 +1316,15 @@ def make_portfolio_distribution(
     investment: float,
     symbol: str,
     comparison_label: str,
+    baseline_label: str = "Rovnomerné váhy",
+    chart_title: str = "Konečná hodnota portfólia",
 ) -> go.Figure:
     figure = go.Figure()
     figure.add_trace(
         go.Histogram(
             x=investment * (1.0 + equal_returns),
             nbinsx=55,
-            name="Rovnomerné váhy",
+            name=baseline_label,
             opacity=0.65,
         )
     )
@@ -1316,7 +1349,7 @@ def make_portfolio_distribution(
         )
     )
     figure.update_layout(
-        title="Konečná hodnota portfólia",
+        title=chart_title,
         xaxis_title=f"Hodnota ({symbol})",
         yaxis_title="Počet scenárov",
         barmode="overlay",
@@ -1327,20 +1360,6 @@ def make_portfolio_distribution(
     figure.update_xaxes(tickprefix=symbol, tickformat=",.0f", nticks=8, showgrid=False)
     figure.update_yaxes(gridcolor="rgba(128,128,128,0.2)")
     return figure
-
-
-def add_ticker_symbols(raw: str, current: list[str]) -> tuple[list[str], list[str]]:
-    additions: list[str] = []
-    invalid: list[str] = []
-    for candidate in re.split(r"[,;\s]+", raw.upper().strip()):
-        if not candidate:
-            continue
-        if not re.fullmatch(r"[A-Z0-9.^=-]{1,20}", candidate):
-            invalid.append(candidate)
-        elif candidate not in current and candidate not in additions:
-            additions.append(candidate)
-    available = max(0, MAX_TICKERS - len(current))
-    return current + additions[:available], invalid + additions[available:]
 
 
 def _format_results_table(results: pd.DataFrame, symbol: str) -> pd.DataFrame:
@@ -1552,50 +1571,142 @@ def _render_portfolio_metrics(
 if "tickers" not in st.session_state:
     st.session_state.tickers = ["AAPL", "NVDA", "MSFT"]
 
-st.title("📈 Monte Carlo simulácia akcií a portfólií")
-st.markdown(
-    "Interaktívny analytický nástroj na simuláciu možných cien akcií, meranie investičného "
-    "rizika a porovnanie portfólií. Porovnáva GBM, historický bootstrap, Student-t, GARCH a "
-    "prepínanie trhových režimov pomocou historických cien Yahoo Finance."
-)
-st.caption(
-    "Výsledky sú štatistické scenáre, nie predpoveď ani investičné odporúčanie."
-)
-
-st.subheader("Sledované akcie")
-st.caption("Zadaj jeden alebo viac symbolov Yahoo Finance, napríklad AAPL, NVDA alebo BRK-B.")
-with st.form("add_tickers_form", clear_on_submit=True):
-    ticker_input = st.text_input(
-        "Tickery na pridanie",
-        placeholder="Napr. AAPL, NVDA, MSFT",
-        label_visibility="collapsed",
+catalog = get_stock_catalog()
+with st.container(border=True):
+    st.caption("SCENÁRE • RIZIKO • PORTFÓLIO")
+    st.title("Monte Carlo analýza akcií")
+    st.write(
+        "Porovnaj možné výsledky investície, riziko a modely na historických dátach. "
+        "Začni ukážkou s Visa alebo si vyber vlastné tickery."
     )
-    add_clicked = st.form_submit_button("Pridať tickery")
-
-if add_clicked:
-    updated, invalid_symbols = add_ticker_symbols(ticker_input, st.session_state.tickers)
-    st.session_state.tickers = updated
-    if invalid_symbols:
-        st.warning(
-            "Niektoré položky neboli pridané alebo prekročili limit 10 tickerov: "
-            + ", ".join(invalid_symbols)
+    demo_col, guide_col = st.columns([1, 2], vertical_alignment="center")
+    with demo_col:
+        demo_clicked = st.button(
+            "Vyskúšať demo s Visa",
+            type="primary",
+            icon=":material/play_arrow:",
+            key="load_visa_demo",
         )
-    elif not ticker_input.strip():
-        st.info("Najprv zadaj ticker alebo zoznam tickerov.")
+    with guide_col:
+        st.caption(
+            "Demo nastaví AAPL, MSFT a Visa (V). Potom stlač **Spustiť simuláciu** "
+            "a v porovnaní uvidíš, ako sa zmení rovnomerne vážené portfólio."
+        )
 
-if st.session_state.tickers:
-    ticker_columns = st.columns(min(5, len(st.session_state.tickers)))
-    for idx, ticker in enumerate(list(st.session_state.tickers)):
-        with ticker_columns[idx % len(ticker_columns)]:
-            if st.button(f"{ticker}  ×", key=f"remove_{ticker}", help=f"Odobrať {ticker}"):
-                st.session_state.tickers.remove(ticker)
-                if st.session_state.tickers:
-                    st.session_state.chart_ticker = st.session_state.tickers[0]
-                st.rerun()
-else:
-    st.warning("Pridaj aspoň jeden ticker, aby sa dala spustiť simulácia.")
+if demo_clicked:
+    st.session_state.tickers = ["AAPL", "MSFT", "V"]
+    st.session_state.chart_ticker = "V"
+    st.rerun()
+
+with st.container(border=True):
+    header_col, count_col = st.columns([3, 1], vertical_alignment="center")
+    with header_col:
+        st.subheader("Sledované akcie")
+    with count_col:
+        st.caption(f"{len(st.session_state.tickers)} / {MAX_TICKERS} tickerov")
+    st.caption(
+        f"Katalóg obsahuje {len(catalog):,} veľkých a mega-cap akcií. Hľadaj názov alebo "
+        "ticker, prípadne zadaj symbol ručne."
+    )
+
+    with st.expander("Vyhľadať akciu v katalógu", expanded=False):
+        catalog_query = st.text_input(
+            "Názov spoločnosti alebo ticker",
+            placeholder="Napr. Visa alebo V",
+            key="catalog_search_query",
+        )
+        if catalog_query.strip():
+            catalog_matches = search_stock_catalog(catalog, catalog_query, limit=50)
+            if catalog_matches.empty:
+                st.info("V katalógu sa nič nenašlo. Skús celý názov alebo ticker Yahoo Finance.")
+            else:
+                selected_match = st.selectbox(
+                    "Výsledky vyhľadávania",
+                    catalog_matches["ticker"].tolist(),
+                    format_func=lambda ticker: (
+                        f"{catalog_matches.loc[catalog_matches['ticker'] == ticker, 'name'].iloc[0]} "
+                        f"({ticker}) — "
+                        f"{catalog_matches.loc[catalog_matches['ticker'] == ticker, 'country'].iloc[0]}"
+                    ),
+                )
+                already_selected = selected_match in st.session_state.tickers
+                if st.button(
+                    "Pridať vybranú akciu",
+                    key="add_catalog_ticker",
+                    disabled=already_selected or len(st.session_state.tickers) >= MAX_TICKERS,
+                ):
+                    st.session_state.tickers, _ = add_ticker_symbols(
+                        selected_match,
+                        st.session_state.tickers,
+                        catalog=catalog,
+                        max_tickers=MAX_TICKERS,
+                    )
+                    st.rerun()
+                if already_selected:
+                    st.caption("Táto akcia už je v zozname sledovaných titulov.")
+                elif len(st.session_state.tickers) >= MAX_TICKERS:
+                    st.caption("Limit je 10 sledovaných tickerov. Najprv niektorý odober.")
+        else:
+            st.caption("Katalóg vyhľadá názov spoločnosti aj symbol, napríklad Visa alebo V.")
+
+    st.caption("Ručne môžeš zadať viac tickerov alebo formát názov (ticker), napríklad Visa (V).")
+    with st.form("add_tickers_form", clear_on_submit=True):
+        ticker_input = st.text_input(
+            "Tickery na pridanie",
+            placeholder="Napr. AAPL, NVDA, Visa (V)",
+            label_visibility="collapsed",
+        )
+        add_clicked = st.form_submit_button("Pridať tickery", icon=":material/add:")
+
+    if add_clicked:
+        updated, invalid_symbols = add_ticker_symbols(
+            ticker_input,
+            st.session_state.tickers,
+            catalog=catalog,
+            max_tickers=MAX_TICKERS,
+        )
+        st.session_state.tickers = updated
+        if invalid_symbols:
+            st.warning(
+                "Niektoré položky neboli pridané alebo prekročili limit 10 tickerov: "
+                + ", ".join(invalid_symbols)
+            )
+        elif not ticker_input.strip():
+            st.info("Najprv zadaj ticker alebo zoznam tickerov.")
+
+    if st.session_state.tickers:
+        ticker_columns = st.columns(min(5, len(st.session_state.tickers)))
+        for idx, ticker in enumerate(list(st.session_state.tickers)):
+            with ticker_columns[idx % len(ticker_columns)]:
+                if st.button(
+                    f"Odobrať {ticker}",
+                    key=f"remove_{ticker}",
+                    icon=":material/close:",
+                    help=f"Odobrať {ticker} zo sledovaných akcií",
+                ):
+                    st.session_state.tickers.remove(ticker)
+                    if st.session_state.tickers:
+                        st.session_state.chart_ticker = st.session_state.tickers[0]
+                    st.rerun()
+    else:
+        st.warning("Pridaj aspoň jeden ticker, aby sa dala spustiť simulácia.")
 
 tickers = list(st.session_state.tickers)
+if tickers:
+    if st.session_state.get("chart_ticker") not in tickers:
+        st.session_state.chart_ticker = tickers[0]
+    ticker_col, hint_col = st.columns([1, 2], vertical_alignment="bottom")
+    with ticker_col:
+        chart_ticker = st.selectbox(
+            "Akcia zobrazená v grafe",
+            tickers,
+            key="chart_ticker",
+        )
+    with hint_col:
+        st.caption("Zmena akcie v grafe vyžaduje nové spustenie simulácie.")
+else:
+    chart_ticker = ""
+
 min_feasible_max_pct = (
     min(100, math.ceil(100 / len(tickers) / 5) * 5) if tickers else 10
 )
@@ -1605,10 +1716,20 @@ max_min_weight_pct = (
 default_weight_pct = min(100, max(min_feasible_max_pct, 40))
 
 with st.sidebar:
-    st.header("Nastavenia simulácie")
-    with st.form("simulation_settings"):
-        horizon_label = st.selectbox("Investičný horizont", list(HORIZONS))
-        n_simulations = st.selectbox("Počet simulácií", SIMULATION_COUNTS, index=2)
+    st.header("Nastavenia")
+    st.caption("Základné parametre simulácie")
+    with st.form("simulation_settings", border=False):
+        horizon_label = st.selectbox(
+            "Investičný horizont",
+            list(HORIZONS),
+            help="Počet obchodných dní, ktoré bude model simulovať.",
+        )
+        n_simulations = st.selectbox(
+            "Počet scenárov",
+            SIMULATION_COUNTS,
+            index=2,
+            format_func=lambda value: f"{value:,}",
+        )
         investment = st.number_input(
             "Počiatočná investícia",
             min_value=100.0,
@@ -1617,7 +1738,16 @@ with st.sidebar:
             step=500.0,
         )
         currency = st.selectbox("Mena účtu", ["EUR", "USD"])
-        benchmark_ticker = st.text_input("Benchmark ticker", value="SPY").strip().upper()
+        benchmark_ticker = st.text_input("Benchmark", value="SPY").strip().upper()
+        model_label = st.selectbox("Model scenárov", list(MODELS))
+        run_clicked = st.form_submit_button(
+            "Spustiť simuláciu",
+            type="primary",
+            icon=":material/monitoring:",
+            width="stretch",
+        )
+
+    with st.expander("Pokročilé nastavenia", expanded=False):
         risk_free_pct = st.slider(
             "Bezriziková sadzba pre Sharpe (%)",
             min_value=0.0,
@@ -1681,27 +1811,14 @@ with st.sidebar:
             value=0.2,
             step=0.1,
         )
-        model_label = st.selectbox("Model scenárov", list(MODELS))
         stress_shock_pct = st.slider(
             "Jednorazový stresový šok (%)", 0, 60, 20, 5
         )
-        run_clicked = st.form_submit_button("Spustiť simuláciu", type="primary")
-
-    if tickers:
-        if st.session_state.get("chart_ticker") not in tickers:
-            st.session_state.chart_ticker = tickers[0]
-        chart_ticker = st.selectbox(
-            "Ticker zobrazený vo fan charte", tickers, key="chart_ticker"
-        )
-    else:
-        chart_ticker = ""
-    st.caption(
-        "Používa päť rokov upravených denných cien Yahoo Finance a historické FX kurzy. "
-        "Budúce menové pohyby sú modelované z minulosti a zostávajú neisté."
-    )
+    st.caption("Zmenené pokročilé parametre sa použijú pri ďalšom spustení.")
 
 currency_symbol = CURRENCY_SYMBOLS[currency]
 current_signature = (
+    ANALYSIS_SCHEMA_VERSION,
     tuple(tickers),
     benchmark_ticker,
     HORIZONS[horizon_label],
@@ -1799,6 +1916,10 @@ if run_clicked:
                     "simulation": simulation,
                     "results": result_table,
                     "prices_as_of": market_prices.index[-1].strftime("%Y-%m-%d"),
+                    "prices_from": market_prices.index[0].strftime("%Y-%m-%d"),
+                    "price_observations": int(len(market_prices)),
+                    "price_tickers": tuple(all_tickers),
+                    "price_data_quality": market_prices.attrs.get("data_quality", {}),
                     "quote_currencies": quote_currencies,
                     "spot_rates": spot_rates,
                     "fx_stats": fx_stats,
@@ -1851,68 +1972,285 @@ elif analysis:
         label for label, model_key in MODELS.items() if model_key == simulation["model"]
     )
     st.caption(
-        f"Ceny do {analysis['prices_as_of']} · {HORIZONS[horizon_label]:,} obchodných dní · "
-        f"{n_simulations:,} simulácií · model {model_description} · mena účtu {currency}"
+        f"{HORIZONS[horizon_label]:,} obchodných dní · {n_simulations:,} scenárov · "
+        f"{model_description} · {currency} · dáta do {analysis['prices_as_of']}"
     )
-    st.caption(
-        f"Ceny grafu aj simulované výnosy sú v {currency_symbol}; FX pohyby sú zahrnuté "
-        "podľa historických kurzov Yahoo Finance."
-    )
-    st.caption(
-        f"KPI zahŕňajú odhad nákladov: {analysis['trade_cost_bps']} bps pri nákupe aj predaji, "
-        f"ročný poplatok {analysis['annual_fee_pct']:.1f} %; približne "
-        f"{format_money(estimated_cost, currency_symbol)} z počiatočnej sumy pri nulovom výnose."
-    )
-    st.caption(
-        f"Drift je zmenšený o {analysis['drift_shrinkage_pct']:.0f} % smerom k bezrizikovej sadzbe; "
-        f"neistota odhadu drifta je {analysis['parameter_uncertainty_pct']:.0f} %. "
-        "Simulácie cien v mene účtu zahŕňajú historické FX pohyby."
-    )
-    if level == "success":
-        st.success(f"**{label}** — ticker splnil nastavené orientačné prahy.")
-    elif level == "error":
-        st.error(f"**{label}** — výsledok prekračuje aspoň jeden nastavený rizikový limit.")
-    else:
-        st.warning(f"**{label}** — priaznivé ani vysokorizikové prahy nie sú splnené.")
-
-    col1, col2, col3, col4 = st.columns(4)
     mean_return = float(selected_row["Priemerný výnos (%)"]) / 100.0
     mean_gain = float(selected_row["Priemerný zisk/strata"])
     median_gain = float(selected_row["Mediánový zisk/strata"])
     beat_value = float(selected_row[f"P. prekonať {benchmark_ticker} (%)"]) / 100.0
-    col1.metric(
-        "Očakávaný výsledok (priemer)",
-        f"{mean_return:+.2%}",
-        format_money(mean_gain, currency_symbol),
+    with st.container(border=True):
+        if level == "success":
+            st.success(f"**{label}** — ticker splnil orientačné výnosové a rizikové prahy.")
+        elif level == "error":
+            st.error(f"**{label}** — výsledok prekračuje aspoň jeden nastavený rizikový limit.")
+        else:
+            st.warning(f"**{label}** — priaznivé ani vysokorizikové prahy nie sú splnené.")
+        st.caption("Skríningový signál podľa zvolených prahov, nie investičné odporúčanie.")
+
+    kpi = st.columns(5)
+    kpi[0].metric(
+        "Výnos — medián",
+        f"{median_return:+.1%}",
+        format_money(median_gain, currency_symbol),
+        help="Polovica scenárov skončila nad touto hodnotou a polovica pod ňou.",
     )
-    col2.metric(
+    kpi[1].metric(
+        "Výnos — priemer",
+        f"{mean_return:+.1%}",
+        format_money(mean_gain, currency_symbol),
+        help="Priemerný výsledok všetkých scenárov po zadaných poplatkoch.",
+    )
+    kpi[2].metric(
         "VaR 95 %",
-        f"{var95_loss:.2%}",
+        f"{var95_loss:.1%}",
         format_money(var95_loss * investment, currency_symbol),
         delta_color="inverse",
-        help="Strata na 5. percentile konečného výnosu. Nejde o maximálny pokles počas cesty.",
+        help="Strata na 5. percentile konečného výnosu. Nie je to najväčší pokles počas cesty.",
     )
-    col3.metric("Sharpe Ratio", f"{sharpe:.2f}")
-    col4.metric("Pravdepodobnosť zisku", f"{profit_probability:.1%}")
-    col5, col6, col7, col8 = st.columns(4)
-    col5.metric("Mediánový výsledok", f"{median_return:+.2%}", format_money(median_gain, currency_symbol))
-    col6.metric(
-        "CVaR 95 %",
-        f"{float(selected_row['CVaR 95 % (%)']) / 100.0:.2%}",
-        delta_color="inverse",
-        help="Priemerná strata v najhorších 5 % simulovaných scenárov.",
+    kpi[3].metric(
+        "Sharpe ratio",
+        f"{sharpe:.2f}",
+        help="Odhad výnosu nad bezrizikovú sadzbu na jednotku volatility.",
     )
-    col7.metric(
-        f"Pravdepodobnosť prekonať {benchmark_ticker}",
-        "—" if math.isnan(beat_value) else f"{beat_value:.1%}",
+    kpi[4].metric(
+        "Pravdepodobnosť zisku",
+        f"{profit_probability:.1%}",
+        help="Podiel simulovaných scenárov s kladným čistým výnosom.",
     )
-    col8.metric(
-        "P. prekročenia limitu poklesu",
-        f"{dd_probability:.1%}",
-        f"Limit {max_drawdown_limit:.0%}",
-        delta_color="inverse",
-        help="Pravdepodobnosť, že maximálny prepad od predchádzajúceho vrcholu prekročí limit.",
-    )
+
+    with st.expander("Ďalšie metriky a náklady"):
+        extra = st.columns(3)
+        extra[0].metric(
+            "CVaR 95 %",
+            f"{float(selected_row['CVaR 95 % (%)']) / 100.0:.1%}",
+            help="Priemerná strata v najhorších 5 % simulovaných scenárov.",
+        )
+        extra[1].metric(
+            f"Pravdepodobnosť prekonať {benchmark_ticker}",
+            "—" if math.isnan(beat_value) else f"{beat_value:.1%}",
+        )
+        extra[2].metric(
+            "Pravdepodobnosť prekročiť limit poklesu",
+            f"{dd_probability:.1%}",
+            f"Limit {max_drawdown_limit:.0%}",
+            delta_color="inverse",
+            help="Pravdepodobnosť, že maximálny prepad od predchádzajúceho vrcholu prekročí limit.",
+        )
+        st.caption(
+            f"Výsledky zohľadňujú {analysis['trade_cost_bps']} bps za nákup aj predaj a "
+            f"ročný poplatok {analysis['annual_fee_pct']:.1f} %. Pri nulovom pohybe cien "
+            f"by odhadované náklady predstavovali približne {format_money(estimated_cost, currency_symbol)}. "
+            f"Drift je zmenšený o {analysis['drift_shrinkage_pct']:.0f} % k bezrizikovej sadzbe; "
+            f"neistota jeho odhadu je {analysis['parameter_uncertainty_pct']:.0f} %."
+        )
+
+    with st.expander("Zdroj a kvalita dát"):
+        data_quality = analysis.get("price_data_quality", {})
+        data_cols = st.columns(3)
+        data_cols[0].metric("Spoločné denné pozorovania", f"{analysis['price_observations']:,}")
+        data_cols[1].metric("Začiatok dát", analysis["prices_from"])
+        data_cols[2].metric("Posledný dostupný deň", analysis["prices_as_of"])
+        st.markdown(
+            "- **Ceny a meny:** upravené denné záverečné ceny a historické FX kurzy z Yahoo Finance.\n"
+            "- **Katalóg spoločností:** lokálna snímka FinanceDatabase z 18. 11. 2026; nemení sa automaticky.\n"
+            "- **Úplnosť:** simulácia používa iba spoločné dátumy s použiteľnými cenami; chýbajúce alebo "
+            "neprekrývajúce sa cenové pozorovania sa pri zosúladení vynechajú. Dostupné FX medzery sa "
+            "dopĺňajú posledným známym kurzom.\n"
+            "- **Obnova cien:** odpovede Yahoo Finance sú v cache najviac 30 minút. Dátum posledného "
+            "pozorovania je uvedený vyššie."
+        )
+        if data_quality:
+            source_rows = int(data_quality.get("source_rows", 0))
+            incomplete_dates = int(data_quality.get("incomplete_dates", 0))
+            duplicate_dates = int(data_quality.get("duplicate_dates", 0))
+            if source_rows:
+                st.caption(
+                    f"Zdroj vrátil {source_rows:,} kalendárnych dátumov; "
+                    f"{incomplete_dates:,} dátumov s neúplnými cenami a "
+                    f"{duplicate_dates:,} duplicitných dátumov sa vynechalo alebo zlúčilo. "
+                    "Neúplné dátumy zahŕňajú aj rozdielne sviatky a obchodné kalendáre búrz."
+                )
+            missing_prices = {
+                ticker: int(count)
+                for ticker, count in data_quality.get("missing_by_ticker", {}).items()
+                if int(count) > 0
+            }
+            if missing_prices:
+                coverage_rows = []
+                for ticker, count in data_quality.get("missing_by_ticker", {}).items():
+                    count = int(count)
+                    coverage_rows.append(
+                        {
+                            "Ticker": ticker,
+                            "Chýbajúce cenové dni": count,
+                            "Pokrytie zdrojových dát (%)": (
+                                100.0 * (source_rows - count) / source_rows if source_rows else float("nan")
+                            ),
+                        }
+                    )
+                st.caption("Úplnosť cien pred zosúladením; chýbajúce dni môžu zahŕňať sviatky búrz.")
+                st.dataframe(
+                    pd.DataFrame(coverage_rows).round(1),
+                    width="stretch",
+                    hide_index=True,
+                )
+            invalid_prices = {
+                ticker: int(count)
+                for ticker, count in data_quality.get("invalid_by_ticker", {}).items()
+                if int(count) > 0
+            }
+            if invalid_prices:
+                st.warning(
+                    "Nulové alebo neplatné ceny sa vylúčili: "
+                    + ", ".join(f"{ticker}: {count}" for ticker, count in invalid_prices.items())
+                )
+            fx_filled = {
+                currency_code: int(count)
+                for currency_code, count in data_quality.get(
+                    "fx_forward_filled_by_currency", {}
+                ).items()
+                if int(count) > 0
+            }
+            if fx_filled:
+                st.caption(
+                    "Počet doplnených chýbajúcich denných FX kurzov podľa meny: "
+                    + ", ".join(f"{currency_code}: {count}" for currency_code, count in fx_filled.items())
+                )
+
+    validation_metrics = analysis["backtest_metrics"]
+    with st.expander("Ako obstál model v spätnom teste a kde môže zlyhať"):
+        if not validation_metrics.empty:
+            selected_validation = validation_metrics.loc[
+                validation_metrics["Model"] == model_description
+            ]
+            if not selected_validation.empty:
+                validation_row = selected_validation.iloc[0]
+                validation_cols = st.columns(4)
+                validation_cols[0].metric(
+                    "Pokrytie pásma 10.–90.",
+                    f"{validation_row['Pokrytie 10.–90. (%)']:.1f}%",
+                    "cieľ približne 80 %",
+                )
+                validation_cols[1].metric(
+                    "Správny smer",
+                    f"{validation_row['Správny smer mediánu (%)']:.1f}%",
+                )
+                validation_cols[2].metric(
+                    "Mediánová chyba",
+                    f"{validation_row['Mediánová absolútna chyba (p. b.)']:.2f} p. b.",
+                )
+                validation_cols[3].metric(
+                    "Počet období",
+                    f"{int(validation_row['Počet období'])}",
+                )
+                st.caption(
+                    "Spätný test používa predchádzajúce tri roky na odhad a kontroluje ďalších "
+                    f"{BACKTEST_HORIZON_DAYS} obchodných dní. Odhady sa posúvajú o "
+                    f"{BACKTEST_STEP_DAYS} dní, preto sa testovacie obdobia prekrývajú. "
+                    "Nižšie pokrytie môže znamenať príliš úzke pásmo; vysoké pokrytie môže vzniknúť "
+                    "aj pri veľmi širokom pásme. Samotné pokrytie preto neznamená presnú predpoveď."
+                )
+        else:
+            st.warning(analysis["backtest_error"] or "Pre tento ticker sa spätný test nepodarilo vypočítať.")
+        st.markdown(
+            "Model nepozná budúce výsledky firiem, správy, zmeny regulácie ani náhle zmeny "
+            "trhového režimu. Päťročná história nemusí obsahovať relevantnú krízu a katalóg "
+            "zameraný na aktívne spoločnosti môže vytvárať survivorship bias. FX kurzy, "
+            "poplatky a kvalita externého zdroja tiež môžu ovplyvniť výstup."
+        )
+
+    portfolio_tickers = list(simulation["portfolio_tickers"])
+    if chart_ticker in portfolio_tickers and len(portfolio_tickers) > 1:
+        without_ticker = [ticker for ticker in portfolio_tickers if ticker != chart_ticker]
+        asset_index = [simulation["tickers"].index(ticker) for ticker in portfolio_tickers]
+        asset_returns = (
+            simulation["terminal_prices"][:, asset_index]
+            / simulation["start_prices"][asset_index]
+            - 1.0
+        )
+        net_returns_with = (1.0 + asset_returns.mean(axis=1)) * cost_factor - 1.0
+        without_indices = [portfolio_tickers.index(ticker) for ticker in without_ticker]
+        net_returns_without = (
+            1.0 + asset_returns[:, without_indices].mean(axis=1)
+        ) * cost_factor - 1.0
+        without_var, without_cvar = _tail_metrics(net_returns_without)
+        with_var, with_cvar = _tail_metrics(net_returns_with)
+        comparison_rows = [
+            {
+                "Ukazovateľ": "Priemerný výnos",
+                f"Bez {chart_ticker}": f"{np.mean(net_returns_without):+.1%}",
+                f"S {chart_ticker}": f"{np.mean(net_returns_with):+.1%}",
+                "Zmena po pridaní": f"{np.mean(net_returns_with) - np.mean(net_returns_without):+.1%}",
+            },
+            {
+                "Ukazovateľ": "Mediánový výnos",
+                f"Bez {chart_ticker}": f"{np.median(net_returns_without):+.1%}",
+                f"S {chart_ticker}": f"{np.median(net_returns_with):+.1%}",
+                "Zmena po pridaní": f"{np.median(net_returns_with) - np.median(net_returns_without):+.1%}",
+            },
+            {
+                "Ukazovateľ": "VaR 95 %",
+                f"Bez {chart_ticker}": f"{without_var:.1%}",
+                f"S {chart_ticker}": f"{with_var:.1%}",
+                "Zmena po pridaní": f"{with_var - without_var:+.1%}",
+            },
+            {
+                "Ukazovateľ": "CVaR 95 %",
+                f"Bez {chart_ticker}": f"{without_cvar:.1%}",
+                f"S {chart_ticker}": f"{with_cvar:.1%}",
+                "Zmena po pridaní": f"{with_cvar - without_cvar:+.1%}",
+            },
+            {
+                "Ukazovateľ": "Pravdepodobnosť zisku",
+                f"Bez {chart_ticker}": f"{np.mean(net_returns_without > 0):.1%}",
+                f"S {chart_ticker}": f"{np.mean(net_returns_with > 0):.1%}",
+                "Zmena po pridaní": (
+                    f"{np.mean(net_returns_with > 0) - np.mean(net_returns_without > 0):+.1%}"
+                ),
+            },
+            {
+                "Ukazovateľ": "Priemerná konečná hodnota",
+                f"Bez {chart_ticker}": format_money(
+                    investment * (1.0 + float(np.mean(net_returns_without))), currency_symbol
+                ),
+                f"S {chart_ticker}": format_money(
+                    investment * (1.0 + float(np.mean(net_returns_with))), currency_symbol
+                ),
+                "Zmena po pridaní": format_money(
+                    investment * float(np.mean(net_returns_with) - np.mean(net_returns_without)),
+                    currency_symbol,
+                ),
+            },
+        ]
+        with st.container(border=True):
+            st.subheader(f"Čo sa zmení po pridaní {chart_ticker}?")
+            st.caption(
+                "Porovnávam rovnomerne vážené portfólio bez vybraného tickeru a s ním "
+                "v tých istých simulovaných scenároch a po rovnakých odhadovaných nákladoch. "
+                "Je to porovnanie váh, nie garancia ani optimalizovaná alokácia."
+            )
+            if with_cvar < without_cvar:
+                st.success(f"V tomto modeli pridanie {chart_ticker} znížilo priemernú stratu v najhorších 5 % scenárov.")
+            elif with_cvar > without_cvar:
+                st.warning(f"V tomto modeli pridanie {chart_ticker} zvýšilo priemernú stratu v najhorších 5 % scenárov.")
+            else:
+                st.info("Pridanie akcie v tomto modeli nezmenilo CVaR 95 % portfólia.")
+            st.caption("Porovnanie platí len pre zvolený model, historické dáta a rovnaké váhy; výsledok sa môže zmeniť pri inom modeli.")
+            st.dataframe(pd.DataFrame(comparison_rows), width="stretch", hide_index=True)
+            st.plotly_chart(
+                make_portfolio_distribution(
+                    net_returns_without,
+                    net_returns_with,
+                    float(investment),
+                    currency_symbol,
+                    comparison_label=f"S {chart_ticker}",
+                    baseline_label=f"Bez {chart_ticker}",
+                    chart_title=f"Rozdelenie hodnoty portfólia bez a s {chart_ticker}",
+                ),
+                width="stretch",
+                config={"displaylogo": False},
+            )
 
     assets_tab, portfolio_tab, stress_tab, backtest_tab, export_tab = st.tabs(
         ["Akcie", "Portfólio", "Stresový scenár", "Backtest", "Export"]
@@ -2146,6 +2484,10 @@ elif analysis:
             )
             st.subheader("Porovnanie modelov na rovnakých dátumoch")
             st.dataframe(backtest_metrics.round(2), width="stretch", hide_index=True)
+            st.caption(
+                "Tabuľka ukazuje citlivosť odhadu na voľbu modelu: porovnaj pokrytie pásma a chybu "
+                "mediánu. Širšie pásmo môže zvýšiť pokrytie, ale samo osebe neznamená lepší odhad."
+            )
             backtest_model = st.selectbox(
                 "Model zobrazený v grafe spätného testu",
                 list(MODELS),
@@ -2294,4 +2636,14 @@ elif analysis:
             "náhle zmeny menovej politiky. Simulácia nie je predpoveď ani prísľub výnosu."
         )
 else:
-    st.info("Nastav parametre v bočnom paneli a stlač **Spustiť simuláciu**.")
+    with st.container(border=True):
+        st.subheader("Prvé spustenie")
+        st.markdown(
+            "1. Skontroluj alebo uprav tickery.\n"
+            "2. V bočnom paneli nastav horizont, sumu a počet scenárov.\n"
+            "3. Stlač **Spustiť simuláciu**; grafy a metriky sa zobrazia nižšie."
+        )
+        st.caption(
+            "Najrýchlejšia ukážka je tlačidlo **Vyskúšať demo s Visa** hore. "
+            "Ceny a menové kurzy sa načítavajú z Yahoo Finance; výsledky sú scenáre, nie záruka výnosu."
+        )
