@@ -16,6 +16,7 @@ import unicodedata
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 import yfinance as yf
 from reportlab.lib import colors
@@ -1466,7 +1467,7 @@ def make_distribution_chart(
         line_dash="dash",
         line_color="#d55e00",
     )
-    figure.add_vline(x=median_value, line_color="#0072b2", line_width=2)
+    figure.add_vline(x=median_value, line_color="#2ecc71", line_width=3)
     figure.add_trace(
         go.Scatter(
             x=[None], y=[None], mode="lines",
@@ -1477,7 +1478,7 @@ def make_distribution_chart(
     figure.add_trace(
         go.Scatter(
             x=[None], y=[None], mode="lines",
-            line={"color": "#0072b2", "width": 2},
+            line={"color": "#2ecc71", "width": 3},
             name="Medián",
         )
     )
@@ -1537,64 +1538,86 @@ def make_portfolio_distribution(
 
     bin_edges = np.linspace(x_min, x_max, 61)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
-    figure = go.Figure()
-    plotted_max = 0.0
-    for values, label, color, dash in (
-        (baseline_values, baseline_label, "#4c9be8", "solid"),
-        (comparison_values, comparison_label, "#f0a23b", "dash"),
+    distributions = []
+    for values, label, color in (
+        (baseline_values, baseline_label, "#4c9be8"),
+        (comparison_values, comparison_label, "#f0a23b"),
     ):
         visible_values = values[(values >= x_min) & (values <= x_max)]
         counts, _ = np.histogram(visible_values, bins=bin_edges)
         proportions = counts / max(len(visible_values), 1) * 100.0
-        plotted_max = max(plotted_max, float(np.max(proportions, initial=0.0)))
+        distributions.append((label, color, proportions))
+
+    plotted_max = max(float(np.max(item[2], initial=0.0)) for item in distributions)
+    y_max = max(plotted_max * 1.1, 1.0)
+    figure = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.12,
+        subplot_titles=[baseline_label, comparison_label],
+    )
+    for row, (label, color, proportions) in enumerate(distributions, start=1):
         figure.add_trace(
             go.Scatter(
                 x=bin_centers,
                 y=proportions,
                 mode="lines",
-                line={"color": color, "width": 3, "dash": dash, "shape": "hvh"},
+                line={"color": color, "width": 3, "shape": "hvh"},
                 name=label,
-                hovertemplate=f"Hodnota {symbol}%{{x:,.0f}}<br>Podiel scenárov %{{y:.2f}}%<extra>{label}</extra>",
-            )
+                showlegend=False,
+                hovertemplate=f"Hodnota {symbol}%{{x:,.0f}}<br>Podiel zobrazených scenárov %{{y:.2f}}%<extra></extra>",
+            ),
+            row=row,
+            col=1,
         )
-    figure.add_vline(
-        x=investment,
-        line_dash="dash",
-        line_color="#d55e00",
-    )
+        figure.add_vline(
+            x=investment,
+            line_dash="dash",
+            line_color="#d55e00",
+            row=row,
+            col=1,
+        )
+        figure.update_yaxes(
+            title_text="Podiel scenárov (%)",
+            range=[0, y_max],
+            tick0=0,
+            dtick=max(0.5, _nice_tick_step(y_max, target_ticks=5)),
+            ticksuffix="%",
+            gridcolor="rgba(128,128,128,0.2)",
+            row=row,
+            col=1,
+        )
     figure.add_trace(
         go.Scatter(
-            x=[None], y=[None], mode="lines",
+            x=[None],
+            y=[None],
+            mode="lines",
             line={"color": "#d55e00", "dash": "dash", "width": 2},
             name="Počiatočný vklad",
-        )
+        ),
+        row=1,
+        col=1,
     )
     figure.update_layout(
         title=chart_title,
-        xaxis_title=f"Hodnota ({symbol})",
-        yaxis_title="Podiel scenárov v intervale (%)",
-        legend={"orientation": "h", "y": 1.14, "x": 0, "xanchor": "left"},
-        margin={"t": 95, "b": 60, "l": 65, "r": 25},
-        height=400,
+        legend={"orientation": "h", "y": 1.08, "x": 0, "xanchor": "left"},
+        margin={"t": 125, "b": 60, "l": 80, "r": 25},
+        height=600,
     )
     x_tick_step = _nice_tick_step(x_max - x_min, target_ticks=10)
-    y_tick_step = max(0.5, _nice_tick_step(plotted_max, target_ticks=7))
     figure.update_xaxes(
         range=[x_min, x_max],
         tick0=math.floor(x_min / x_tick_step) * x_tick_step,
         dtick=x_tick_step,
         tickprefix=symbol,
         tickformat=",.0f",
+        title_text=f"Hodnota ({symbol})",
         showgrid=True,
         gridcolor="rgba(128,128,128,0.12)",
         zeroline=False,
-    )
-    figure.update_yaxes(
-        rangemode="tozero",
-        tick0=0,
-        dtick=y_tick_step,
-        ticksuffix="%",
-        gridcolor="rgba(128,128,128,0.2)",
+        row=2,
+        col=1,
     )
     return figure
 
@@ -2553,16 +2576,17 @@ elif analysis:
                     net_returns_with,
                     float(investment),
                     currency_symbol,
-                    comparison_label=f"S {chart_ticker}",
-                    baseline_label=f"Bez {chart_ticker}",
+                    comparison_label=f"S {chart_ticker} · rovnomerne",
+                    baseline_label=f"Bez {chart_ticker} · rovnomerne",
                     chart_title=f"Rozdelenie hodnoty portfólia bez a s {chart_ticker}",
                 ),
                 width="stretch",
                 config={"displaylogo": False},
             )
             st.caption(
-                "Obrysové čiary zobrazujú podiel scenárov v jednotlivých hodnotových intervaloch; "
-                "rozsah osi vychádza z hlavného pásma výsledkov a môže vynechať najvzdialenejšie extrémy."
+                "Každý panel ukazuje vlastné rovnomerne vážené portfólio. Obe majú rovnaké osi a "
+                "mierku; počiatočný vklad je prerušovaná čiara. Zobrazené je hlavné pásmo výsledkov, "
+                "najvzdialenejšie extrémy môžu byť mimo osi."
             )
 
     assets_tab, portfolio_tab, stress_tab, backtest_tab, export_tab = st.tabs(
