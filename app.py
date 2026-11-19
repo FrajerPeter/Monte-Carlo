@@ -475,8 +475,8 @@ def _prepare_model(
     shrinkage = float(np.clip(drift_shrinkage, 0.0, 1.0))
     risk_free_daily = math.log1p(max(risk_free_rate, -0.99) / TRADING_DAYS_PER_YEAR)
     daily_drift = (1.0 - shrinkage) * robust_mean + shrinkage * risk_free_daily
-    daily_volatility = np.maximum(robust_log_returns.std(axis=0, ddof=1), 1e-6)
-    correlation = regularized_correlation(pd.DataFrame(robust_log_returns))
+    daily_volatility = np.maximum(log_returns.std(axis=0, ddof=1), 1e-6)
+    correlation = regularized_correlation(pd.DataFrame(log_returns))
     prepared: dict[str, object] = {
         "model": model,
         "log_returns": log_returns,
@@ -1689,6 +1689,14 @@ def make_pdf_report(
     font_candidates = [
         (Path("C:/Windows/Fonts/arial.ttf"), Path("C:/Windows/Fonts/arialbd.ttf")),
         (Path("C:/Windows/Fonts/segoeui.ttf"), Path("C:/Windows/Fonts/segoeuib.ttf")),
+        (
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        ),
+        (
+            Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
+            Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
+        ),
     ]
     for regular_path, bold_path in font_candidates:
         if regular_path.exists():
@@ -3111,9 +3119,9 @@ elif analysis:
             "pokojný a stresový stav pomocou 20-dňovej volatility a historickej prechodovej matice. "
             "Korelácie aktív sa regularizujú, aby boli vhodné na spoločné simulácie. Fan chart "
             "zobrazuje až 1 000 ukážkových ciest; percentily sa počítajú zo všetkých simulácií.\n\n"
-            "Výsledky po nákladoch odpočítajú zadanú jednorazovú províziu pri nákupe aj predaji "
-            "a priebežný ročný poplatok. Ide o zjednodušený nákladový model; nezahŕňa dane, "
-            "spread, sklz ani individuálne poplatky sprostredkovateľa. Walk-forward spätný test "
+            "Výsledky po nákladoch zahŕňajú jednorazovú províziu za nákup aj predaj, odhadovaný "
+            "spread a sklz, ročný priebežný poplatok (TER), nákladový proxy pre ročný obrat pri "
+            "rebalansovaní a zjednodušenú daň z kapitálového zisku pri predaji. Walk-forward spätný test "
             "porovnáva všetkých päť modelov na rovnakých dátumoch: pri každom odhade použije iba "
             "predchádzajúce tri roky a vyhodnotí nasledujúcich 63 obchodných dní; ďalší odhad "
             "posunie o 21 dní. Odhady sa prekrývajú, takže obdobia nie sú nezávislé.\n\n"
