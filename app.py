@@ -940,6 +940,16 @@ def format_money(value: float, symbol: str) -> str:
     return f"{symbol}{value:,.2f}"
 
 
+def format_delta_money(value: float, symbol: str) -> str:
+    """Format metric deltas with the sign first so Streamlit chooses the right arrow."""
+    amount = abs(float(value))
+    if value < 0:
+        return f"-{symbol}{amount:,.2f}"
+    if value > 0:
+        return f"+{symbol}{amount:,.2f}"
+    return f"{symbol}{amount:,.2f}"
+
+
 def _tail_metrics(returns: np.ndarray) -> tuple[float, float]:
     q05 = float(np.quantile(returns, 0.05))
     tail = returns[returns <= q05]
@@ -1654,24 +1664,22 @@ def _render_portfolio_metrics(
     columns[0].metric(
         "Očakávaný výnos (priemer)",
         f"{float(summary['mean_return']):+.2%}",
-        format_money(float(summary["mean_gain"]), symbol),
+        format_delta_money(float(summary["mean_gain"]), symbol),
     )
     columns[1].metric(
         "Mediánový výnos",
         f"{float(summary['median_return']):+.2%}",
-        format_money(float(summary["median_gain"]), symbol),
+        format_delta_money(float(summary["median_gain"]), symbol),
     )
     columns[2].metric(
         "VaR 95 %",
         f"{float(summary['var95']):.2%}",
-        format_money(float(summary["var95"]) * float(summary["investment"]), symbol),
-        delta_color="inverse",
+        format_delta_money(-float(summary["var95"]) * float(summary["investment"]), symbol),
     )
     columns[3].metric(
         "CVaR 95 %",
         f"{float(summary['cvar95']):.2%}",
-        format_money(float(summary["cvar95"]) * float(summary["investment"]), symbol),
-        delta_color="inverse",
+        format_delta_money(-float(summary["cvar95"]) * float(summary["investment"]), symbol),
     )
 
     columns = st.columns(4)
@@ -1700,26 +1708,8 @@ with st.container(border=True):
     st.title("Monte Carlo analýza akcií")
     st.write(
         "Porovnaj možné výsledky investície, riziko a modely na historických dátach. "
-        "Začni ukážkou s Visa alebo si vyber vlastné tickery."
+        "Vyber si tickery a nastav vlastné parametre simulácie."
     )
-    demo_col, guide_col = st.columns([1, 2], vertical_alignment="center")
-    with demo_col:
-        demo_clicked = st.button(
-            "Vyskúšať demo s Visa",
-            type="primary",
-            icon=":material/play_arrow:",
-            key="load_visa_demo",
-        )
-    with guide_col:
-        st.caption(
-            "Demo nastaví AAPL, MSFT a Visa (V). Potom stlač **Spustiť simuláciu** "
-            "a v porovnaní uvidíš, ako sa zmení rovnomerne vážené portfólio."
-        )
-
-if demo_clicked:
-    st.session_state.tickers = ["AAPL", "MSFT", "V"]
-    st.session_state.chart_ticker = "V"
-    st.rerun()
 
 with st.container(border=True):
     header_col, count_col = st.columns([3, 1], vertical_alignment="center")
@@ -2157,20 +2147,19 @@ elif analysis:
     kpi[0].metric(
         "Výnos — medián",
         f"{median_return:+.1%}",
-        format_money(median_gain, currency_symbol),
+        format_delta_money(median_gain, currency_symbol),
         help="Polovica scenárov skončila nad touto hodnotou a polovica pod ňou.",
     )
     kpi[1].metric(
         "Výnos — priemer",
         f"{mean_return:+.1%}",
-        format_money(mean_gain, currency_symbol),
+        format_delta_money(mean_gain, currency_symbol),
         help="Priemerný výsledok všetkých scenárov po zadaných poplatkoch.",
     )
     kpi[2].metric(
         "VaR 95 %",
         f"{var95_loss:.1%}",
-        format_money(var95_loss * investment, currency_symbol),
-        delta_color="inverse",
+        format_delta_money(-var95_loss * investment, currency_symbol),
         help="Strata na 5. percentile konečného výnosu. Nie je to najväčší pokles počas cesty.",
     )
     kpi[3].metric(
@@ -2931,6 +2920,5 @@ else:
             "3. Stlač **Spustiť simuláciu**; grafy a metriky sa zobrazia nižšie."
         )
         st.caption(
-            "Najrýchlejšia ukážka je tlačidlo **Vyskúšať demo s Visa** hore. "
             "Ceny a menové kurzy sa načítavajú z Yahoo Finance; výsledky sú scenáre, nie záruka výnosu."
         )

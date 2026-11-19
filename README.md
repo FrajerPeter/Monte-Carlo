@@ -19,7 +19,7 @@ Ak sa Streamlit už inštaloval, vynechať vytvorenie prostredia aj `pip install
 
 ## Ovládanie aplikácie
 
-- Na úvodnej obrazovke stlač **Vyskúšať demo s Visa**, ak chceš rýchlo vidieť porovnanie AAPL/MSFT/V. Potom spusti výpočet v bočnom paneli.
+- Skontroluj alebo uprav sledované tickery, potom nastav parametre a spusti simuláciu v bočnom paneli.
 - Vyhľadaj akciu podľa názvu alebo tickeru v katalógu 2 339 veľkých a mega-cap titulov, prípadne zadaj ticker ručne. Formáty `Visa (V)`, `Visa` aj `V` sa rozpoznajú; do jednej simulácie môžeš pridať najviac desať tickerov.
 - Katalóg je lokálna snímka z 18. 11. 2026. Obsahuje aktívne primárne záznamy klasifikované ako Mega Cap alebo Large Cap v [FinanceDatabase](https://github.com/JerBouma/FinanceDatabase); nejde o presne zoradený živý rebríček prvých 1 000 podľa kapitalizácie. Podrobnosti sú v `data/README.md`.
 - Vyber benchmark, horizont, menu účtu a počiatočnú investíciu.
