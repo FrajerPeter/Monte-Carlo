@@ -57,6 +57,19 @@ MODELS = {
     "Prepínanie režimov (pokoj/stres)": "regime_switch",
 }
 CURRENCY_SYMBOLS = {"EUR": "€", "USD": "$"}
+BENCHMARK_OPTIONS = {
+    "SPY": "S&P 500 — SPY",
+    "QQQ": "Nasdaq-100 — QQQ",
+    "DIA": "Dow Jones — DIA",
+    "IWM": "Russell 2000 — IWM",
+    "VTI": "Celý americký akciový trh — VTI",
+    "VT": "Svetové akcie — VT",
+    "EFA": "Vyspelé trhy mimo USA — EFA",
+    "EEM": "Rozvíjajúce sa trhy — EEM",
+    "AGG": "Americké dlhopisy — AGG",
+    "BND": "Celý americký dlhopisový trh — BND",
+    "custom": "Iný ticker…",
+}
 PORTFOLIO_STRATEGIES = {
     "equal": "Rovnomerné váhy",
     "max_sharpe": "Max. Sharpe",
@@ -1854,7 +1867,20 @@ with st.sidebar:
             step=500.0,
         )
         currency = st.selectbox("Mena účtu", ["EUR", "USD"])
-        benchmark_ticker = st.text_input("Benchmark", value="SPY").strip().upper()
+        benchmark_choice = st.selectbox(
+            "Benchmark",
+            list(BENCHMARK_OPTIONS),
+            format_func=lambda ticker: BENCHMARK_OPTIONS[ticker],
+            help="Vyber porovnávací index/ETF alebo zvoľ vlastný ticker Yahoo Finance.",
+        )
+        if benchmark_choice == "custom":
+            benchmark_ticker = st.text_input(
+                "Ticker vlastného benchmarku",
+                placeholder="Napr. EUNL.DE",
+                max_chars=20,
+            ).strip().upper()
+        else:
+            benchmark_ticker = benchmark_choice
         model_label = st.selectbox("Model scenárov", list(MODELS))
         run_clicked = st.form_submit_button(
             "Spustiť simuláciu",
