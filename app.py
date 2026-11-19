@@ -1538,56 +1538,52 @@ def make_portfolio_distribution(
 
     bin_edges = np.linspace(x_min, x_max, 61)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
-    distributions = []
-    for values, label, color in (
-        (baseline_values, baseline_label, "#4c9be8"),
-        (comparison_values, comparison_label, "#f0a23b"),
-    ):
-        visible_values = values[(values >= x_min) & (values <= x_max)]
-        counts, _ = np.histogram(visible_values, bins=bin_edges)
-        proportions = counts / max(len(visible_values), 1) * 100.0
-        distributions.append((label, color, proportions))
+    bin_width = float(bin_edges[1] - bin_edges[0])
 
-    plotted_max = max(float(np.max(item[2], initial=0.0)) for item in distributions)
-    y_max = max(plotted_max * 1.1, 1.0)
-    figure = make_subplots(
-        rows=2,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.12,
-        subplot_titles=[baseline_label, comparison_label],
+    # Add the orange comparison first so the translucent blue baseline is drawn above it.
+    visible_comparison = comparison_values[
+        (comparison_values >= x_min) & (comparison_values <= x_max)
+    ]
+    visible_baseline = baseline_values[(baseline_values >= x_min) & (baseline_values <= x_max)]
+    comparison_counts, _ = np.histogram(visible_comparison, bins=bin_edges)
+    baseline_counts, _ = np.histogram(visible_baseline, bins=bin_edges)
+    plotted_max = max(
+        float(np.max(comparison_counts, initial=0)),
+        float(np.max(baseline_counts, initial=0)),
     )
-    for row, (label, color, proportions) in enumerate(distributions, start=1):
-        figure.add_trace(
-            go.Scatter(
-                x=bin_centers,
-                y=proportions,
-                mode="lines",
-                line={"color": color, "width": 3, "shape": "hvh"},
-                name=label,
-                showlegend=False,
-                hovertemplate=f"Hodnota {symbol}%{{x:,.0f}}<br>Podiel zobrazených scenárov %{{y:.2f}}%<extra></extra>",
-            ),
-            row=row,
-            col=1,
+    y_max = max(plotted_max * 1.1, 1.0)
+
+    figure = go.Figure()
+    figure.add_trace(
+        go.Bar(
+            x=bin_centers,
+            y=comparison_counts,
+            width=bin_width,
+            name=comparison_label,
+            legendrank=2,
+            marker={"color": "#f0a23b", "line": {"width": 0}},
+            opacity=0.82,
+            hovertemplate=f"{comparison_label}<br>Hodnota {symbol}%{{x:,.0f}}<br>Počet scenárov %{{y:,}}<extra></extra>",
         )
-        figure.add_vline(
-            x=investment,
-            line_dash="dash",
-            line_color="#d55e00",
-            row=row,
-            col=1,
+    )
+    figure.add_trace(
+        go.Bar(
+            x=bin_centers,
+            y=baseline_counts,
+            width=bin_width,
+            name=baseline_label,
+            legendrank=1,
+            marker={"color": "#4c9be8", "line": {"width": 0}},
+            opacity=0.62,
+            hovertemplate=f"{baseline_label}<br>Hodnota {symbol}%{{x:,.0f}}<br>Počet scenárov %{{y:,}}<extra></extra>",
         )
-        figure.update_yaxes(
-            title_text="Podiel scenárov (%)",
-            range=[0, y_max],
-            tick0=0,
-            dtick=max(0.5, _nice_tick_step(y_max, target_ticks=5)),
-            ticksuffix="%",
-            gridcolor="rgba(128,128,128,0.2)",
-            row=row,
-            col=1,
-        )
+    )
+    figure.add_vline(
+        x=investment,
+        line_dash="dash",
+        line_color="#d55e00",
+        line_width=2,
+    )
     figure.add_trace(
         go.Scatter(
             x=[None],
@@ -1595,15 +1591,23 @@ def make_portfolio_distribution(
             mode="lines",
             line={"color": "#d55e00", "dash": "dash", "width": 2},
             name="Počiatočný vklad",
-        ),
-        row=1,
-        col=1,
+            legendrank=3,
+        )
     )
     figure.update_layout(
         title=chart_title,
+        barmode="overlay",
+        bargap=0,
         legend={"orientation": "h", "y": 1.08, "x": 0, "xanchor": "left"},
-        margin={"t": 125, "b": 60, "l": 80, "r": 25},
-        height=600,
+        margin={"t": 105, "b": 65, "l": 80, "r": 25},
+        height=500,
+    )
+    figure.update_yaxes(
+        title_text="Počet scenárov",
+        range=[0, y_max],
+        tick0=0,
+        dtick=max(1.0, _nice_tick_step(y_max, target_ticks=6)),
+        gridcolor="rgba(128,128,128,0.2)",
     )
     x_tick_step = _nice_tick_step(x_max - x_min, target_ticks=10)
     figure.update_xaxes(
@@ -1616,8 +1620,6 @@ def make_portfolio_distribution(
         showgrid=True,
         gridcolor="rgba(128,128,128,0.12)",
         zeroline=False,
-        row=2,
-        col=1,
     )
     return figure
 
@@ -2584,9 +2586,9 @@ elif analysis:
                 config={"displaylogo": False},
             )
             st.caption(
-                "Každý panel ukazuje vlastné rovnomerne vážené portfólio. Obe majú rovnaké osi a "
-                "mierku; počiatočný vklad je prerušovaná čiara. Zobrazené je hlavné pásmo výsledkov, "
-                "najvzdialenejšie extrémy môžu byť mimo osi."
+                "Histogramy sa prekrývajú: oranžová je vzadu a modrá vpredu s priehľadnosťou, "
+                "aby bolo vidieť obe rozdelenia. Prerušovaná čiara označuje počiatočný vklad. "
+                "Osa Y ukazuje počet scenárov; krajné hodnoty mimo zobrazeného intervalu sa nezobrazujú."
             )
 
     assets_tab, portfolio_tab, stress_tab, backtest_tab, export_tab = st.tabs(
@@ -2736,8 +2738,9 @@ elif analysis:
             config={"displaylogo": False},
         )
         st.caption(
-            "Obrysové krivky majú rovnaký vklad a rovnaké simulované scenáre. Osa Y ukazuje podiel "
-            "zobrazených scenárov v intervale; najvzdialenejšie extrémy môžu byť mimo osi."
+            "Histogramy sa prekrývajú: oranžová je vzadu a modrá vpredu s priehľadnosťou. "
+            "Obe stratégie používajú rovnaký vklad a simulované scenáre. Osa Y ukazuje počet "
+            "scenárov; krajné hodnoty mimo zobrazeného intervalu sa nezobrazujú."
         )
 
     with stress_tab:
