@@ -138,8 +138,10 @@ def _extract_close(downloaded: pd.DataFrame, symbols: tuple[str, ...]) -> pd.Dat
 
 
 @st.cache_data(show_spinner=False)
-def get_stock_catalog() -> pd.DataFrame:
+def get_stock_catalog(file_size: int, modified_ns: int) -> pd.DataFrame:
     """Read the bundled global large-cap catalog once per Streamlit process."""
+    # File metadata participates in Streamlit's cache key so bundled catalog updates appear online.
+    del file_size, modified_ns
     return load_stock_catalog()
 
 
@@ -1873,7 +1875,9 @@ if not st.session_state.get("empty_ticker_defaults_migrated", False):
         st.session_state.tickers = []
     st.session_state.empty_ticker_defaults_migrated = True
 
-catalog = get_stock_catalog()
+catalog_file = Path(__file__).resolve().parent / "data" / "global_stocks_largecap.csv"
+catalog_stat = catalog_file.stat()
+catalog = get_stock_catalog(catalog_stat.st_size, catalog_stat.st_mtime_ns)
 nyse_listing_count = int(catalog["exchange"].eq("NYQ").sum())
 with st.container(border=True):
     st.caption("SCENÁRE • RIZIKO • PORTFÓLIO")
