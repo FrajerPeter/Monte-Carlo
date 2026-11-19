@@ -1,6 +1,11 @@
 import unittest
 
-from stock_catalog import add_ticker_symbols, load_stock_catalog, search_stock_catalog
+from stock_catalog import (
+    add_ticker_symbols,
+    filter_stock_catalog,
+    load_stock_catalog,
+    search_stock_catalog,
+)
 
 
 class StockCatalogTests(unittest.TestCase):
@@ -12,6 +17,13 @@ class StockCatalogTests(unittest.TestCase):
         self.assertGreaterEqual(len(self.catalog), 1_000)
         visa = self.catalog.loc[self.catalog["ticker"] == "V"].iloc[0]
         self.assertEqual(visa["name"], "Visa Inc.")
+
+    def test_catalog_includes_nyse_listings(self):
+        nyse = filter_stock_catalog(self.catalog, "NYSE")
+        self.assertGreaterEqual(len(nyse), 100)
+        self.assertTrue(nyse["exchange"].eq("NYQ").all())
+        self.assertIn("V", nyse["ticker"].tolist())
+        self.assertIn("JPM", nyse["ticker"].tolist())
 
     def test_search_by_company_name_and_ticker(self):
         for query in ("Visa", "V", "Visa (V)"):

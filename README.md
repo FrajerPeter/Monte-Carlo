@@ -19,10 +19,10 @@ Ak sa Streamlit už inštaloval, vynechať vytvorenie prostredia aj `pip install
 
 ## Ovládanie aplikácie
 
-- Skontroluj alebo uprav sledované tickery, potom nastav parametre a spusti simuláciu v bočnom paneli.
-- Vyhľadaj akciu podľa názvu alebo tickeru v katalógu 2 339 veľkých a mega-cap titulov, prípadne zadaj ticker ručne. Formáty `Visa (V)`, `Visa` aj `V` sa rozpoznajú; do jednej simulácie môžeš pridať najviac desať tickerov.
+- Zoznam sledovaných tickerov je po otvorení prázdny. Vyhľadaj a vyber akcie z katalógu alebo pridaj vlastný ticker, potom spusti simuláciu v bočnom paneli.
+- Vyhľadaj akciu podľa názvu alebo tickeru v katalógu 2 339 veľkých a mega-cap titulov, prípadne zadaj ticker ručne. Katalóg obsahuje aj akcie NYSE; vo vyhľadávaní môžeš zoznam filtrovať na túto burzu. Formáty `Visa (V)`, `Visa` aj `V` sa rozpoznajú; do jednej simulácie môžeš pridať najviac desať tickerov.
 - Katalóg je lokálna snímka z 18. 11. 2026. Obsahuje aktívne primárne záznamy klasifikované ako Mega Cap alebo Large Cap v [FinanceDatabase](https://github.com/JerBouma/FinanceDatabase); nejde o presne zoradený živý rebríček prvých 1 000 podľa kapitalizácie. Podrobnosti sú v `data/README.md`.
-- Vyber benchmark, horizont, menu účtu a počiatočnú investíciu.
+- Vyber benchmark (vrátane S&P 500, Nasdaq-100, NYSE Composite `^NYA` a ďalších indexov/ETF), horizont, menu účtu a počiatočnú investíciu. Minimálny vklad je 10 € alebo 10 $; vlastný benchmark sa nezadáva ručne.
 - Vyber 1 000, 5 000 alebo 10 000 simulácií a jeden z piatich modelov.
 - Nastav bezrizikovú sadzbu, zmenšenie historického drifta, neistotu odhadu drifta, rizikový limit, obmedzenia váh a odhad nákladov. Náklady môžu zahŕňať províziu, používateľský odhad spreadu/sklzu, priebežný poplatok a ročný obrat ako nákladový proxy pre rebalansovanie. Voliteľná zjednodušená daň sa odpočíta len z kladného konečného zisku.
 - Stlač **Spustiť simuláciu**. Po zmene nastavení klikni znovu, aby sa prepočítali výsledky.

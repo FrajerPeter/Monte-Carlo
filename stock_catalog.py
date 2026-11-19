@@ -49,6 +49,16 @@ def load_stock_catalog(path: str | Path | None = None) -> pd.DataFrame:
     return catalog.drop_duplicates("ticker", keep="first")[CATALOG_COLUMNS].reset_index(drop=True)
 
 
+def filter_stock_catalog(catalog: pd.DataFrame, exchange: str | None = None) -> pd.DataFrame:
+    """Filter catalog listings by a readable exchange name or raw exchange code."""
+    if not exchange or exchange.casefold() in {"všetky burzy", "all"}:
+        return catalog.copy()
+
+    exchange_codes = {"nyse": "NYQ"}
+    exchange_code = exchange_codes.get(exchange.strip().casefold(), exchange.strip().upper())
+    return catalog.loc[catalog["exchange"].str.upper().eq(exchange_code)].reset_index(drop=True)
+
+
 def search_stock_catalog(
     catalog: pd.DataFrame,
     query: str,

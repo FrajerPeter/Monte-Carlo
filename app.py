@@ -27,7 +27,11 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-from stock_catalog import add_ticker_symbols, load_stock_catalog, search_stock_catalog
+from stock_catalog import (
+    add_ticker_symbols,
+    filter_stock_catalog,
+    load_stock_catalog,
+)
 
 
 TRADING_DAYS_PER_YEAR = 252
@@ -60,6 +64,7 @@ MODELS = {
 CURRENCY_SYMBOLS = {"EUR": "€", "USD": "$"}
 BENCHMARK_OPTIONS = {
     "SPY": "S&P 500 — SPY",
+    "^NYA": "NYSE Composite — ^NYA",
     "QQQ": "Nasdaq-100 — QQQ",
     "DIA": "Dow Jones — DIA",
     "IWM": "Russell 2000 — IWM",
@@ -69,7 +74,6 @@ BENCHMARK_OPTIONS = {
     "EEM": "Rozvíjajúce sa trhy — EEM",
     "AGG": "Americké dlhopisy — AGG",
     "BND": "Celý americký dlhopisový trh — BND",
-    "custom": "Iný ticker…",
 }
 PORTFOLIO_STRATEGIES = {
     "equal": "Rovnomerné váhy",
@@ -136,6 +140,15 @@ def _extract_close(downloaded: pd.DataFrame, symbols: tuple[str, ...]) -> pd.Dat
 def get_stock_catalog() -> pd.DataFrame:
     """Read the bundled global large-cap catalog once per Streamlit process."""
     return load_stock_catalog()
+
+
+def _format_catalog_match(matches: pd.DataFrame, ticker: str) -> str:
+    """Show company, country, and a readable exchange name in ticker search."""
+    row = matches.loc[matches["ticker"].eq(ticker)].iloc[0]
+    exchange = "NYSE" if row["exchange"] == "NYQ" else row["exchange"]
+    exchange_label = f" · {exchange}" if exchange else ""
+    country_label = f" — {row['country']}" if row["country"] else ""
+    return f"{row['name']} ({ticker}){country_label}{exchange_label}"
 
 
 @st.cache_data(ttl=30 * 60, max_entries=32, show_spinner=False)
@@ -1829,9 +1842,14 @@ def _render_portfolio_metrics(
 
 
 if "tickers" not in st.session_state:
-    st.session_state.tickers = ["AAPL", "NVDA", "MSFT"]
+    st.session_state.tickers = []
+if not st.session_state.get("empty_ticker_defaults_migrated", False):
+    if st.session_state.tickers == ["AAPL", "NVDA", "MSFT"]:
+        st.session_state.tickers = []
+    st.session_state.empty_ticker_defaults_migrated = True
 
 catalog = get_stock_catalog()
+nyse_listing_count = int(catalog["exchange"].eq("NYQ").sum())
 with st.container(border=True):
     st.caption("SCENÁRE • RIZIKO • PORTFÓLIO")
     st.title("Monte Carlo analýza akcií")
@@ -1848,54 +1866,65 @@ with st.container(border=True):
         st.caption(f"{len(st.session_state.tickers)} / {MAX_TICKERS} tickerov")
     st.caption(
         f"Katalóg obsahuje {len(catalog):,} veľkých a mega-cap akcií. Hľadaj názov alebo "
-        "ticker, prípadne zadaj symbol ručne."
+        f"ticker, prípadne zadaj symbol ručne. Zahŕňa aj {nyse_listing_count:,} titulov z NYSE."
     )
 
-    with st.expander("Vyhľadať akciu v katalógu", expanded=False):
-        catalog_query = st.text_input(
-            "Názov spoločnosti alebo ticker",
-            placeholder="Napr. Visa alebo V",
-            key="catalog_search_query",
+    with st.container(border=True):
+        exchange_col, ticker_col, add_col = st.columns(
+            [1.15, 4.0, 1.2], vertical_alignment="bottom"
         )
-        if catalog_query.strip():
-            catalog_matches = search_stock_catalog(catalog, catalog_query, limit=50)
-            if catalog_matches.empty:
-                st.info("V katalógu sa nič nenašlo. Skús celý názov alebo ticker Yahoo Finance.")
-            else:
-                selected_match = st.selectbox(
-                    "Výsledky vyhľadávania",
-                    catalog_matches["ticker"].tolist(),
-                    format_func=lambda ticker: (
-                        f"{catalog_matches.loc[catalog_matches['ticker'] == ticker, 'name'].iloc[0]} "
-                        f"({ticker}) — "
-                        f"{catalog_matches.loc[catalog_matches['ticker'] == ticker, 'country'].iloc[0]}"
-                    ),
-                )
-                already_selected = selected_match in st.session_state.tickers
-                if st.button(
-                    "Pridať vybranú akciu",
-                    key="add_catalog_ticker",
-                    disabled=already_selected or len(st.session_state.tickers) >= MAX_TICKERS,
-                ):
-                    st.session_state.tickers, _ = add_ticker_symbols(
-                        selected_match,
-                        st.session_state.tickers,
-                        catalog=catalog,
-                        max_tickers=MAX_TICKERS,
-                    )
-                    st.rerun()
-                if already_selected:
-                    st.caption("Táto akcia už je v zozname sledovaných titulov.")
-                elif len(st.session_state.tickers) >= MAX_TICKERS:
-                    st.caption("Limit je 10 sledovaných tickerov. Najprv niektorý odober.")
+        with exchange_col:
+            catalog_exchange_filter = st.selectbox(
+                "Burza",
+                ["Všetky burzy", "NYSE"],
+                key="catalog_exchange_filter",
+            )
+        searchable_catalog = filter_stock_catalog(
+            catalog,
+            None if catalog_exchange_filter == "Všetky burzy" else catalog_exchange_filter,
+        )
+        with ticker_col:
+            selected_match = st.selectbox(
+                "Vyhľadaj alebo vyber akciu",
+                searchable_catalog["ticker"].tolist(),
+                index=None,
+                placeholder="Začni písať názov firmy alebo ticker…",
+                format_func=lambda ticker: _format_catalog_match(searchable_catalog, ticker),
+                key=f"catalog_ticker_picker_{catalog_exchange_filter.casefold().replace(' ', '_')}",
+            )
+        already_selected = selected_match in st.session_state.tickers if selected_match else False
+        at_ticker_limit = len(st.session_state.tickers) >= MAX_TICKERS
+        with add_col:
+            add_catalog_clicked = st.button(
+                "Pridať akciu",
+                key="add_catalog_ticker",
+                icon=":material/add:",
+                disabled=selected_match is None or already_selected or at_ticker_limit,
+                width="stretch",
+            )
+        if add_catalog_clicked and selected_match is not None:
+            st.session_state.tickers, _ = add_ticker_symbols(
+                selected_match,
+                st.session_state.tickers,
+                catalog=catalog,
+                max_tickers=MAX_TICKERS,
+            )
+            st.rerun()
+        if already_selected:
+            st.caption("Táto akcia už je v zozname sledovaných titulov.")
+        elif at_ticker_limit:
+            st.caption("Limit je 10 sledovaných tickerov. Najprv niektorý odober.")
         else:
-            st.caption("Katalóg vyhľadá názov spoločnosti aj symbol, napríklad Visa alebo V.")
+            st.caption(
+                f"Vyhľadávateľný zoznam obsahuje {len(searchable_catalog):,} akcií. "
+                "NYSE tituly zahŕňajú napríklad Visa (V), JPMorgan (JPM) a Coca-Cola (KO)."
+            )
 
-    st.caption("Ručne môžeš zadať viac tickerov alebo formát názov (ticker), napríklad Visa (V).")
+    st.caption("Môžeš pridať aj ticker, ktorý nie je v katalógu.")
     with st.form("add_tickers_form", clear_on_submit=True):
         ticker_input = st.text_input(
-            "Tickery na pridanie",
-            placeholder="Napr. AAPL, NVDA, Visa (V)",
+            "Tickery mimo katalógu",
+            placeholder="Napr. ABCD alebo ABCD, WXYZ",
             label_visibility="collapsed",
         )
         add_clicked = st.form_submit_button("Pridať tickery", icon=":material/add:")
@@ -1972,28 +2001,22 @@ with st.sidebar:
             index=2,
             format_func=lambda value: f"{value:,}",
         )
+        currency = st.selectbox("Mena účtu", ["EUR", "USD"])
         investment = st.number_input(
-            "Počiatočná investícia",
-            min_value=100.0,
+            f"Počiatočná investícia ({CURRENCY_SYMBOLS[currency]})",
+            min_value=10.0,
             max_value=10_000_000.0,
             value=10_000.0,
-            step=500.0,
+            step=10.0,
+            help="Minimálny vklad je 10 v mene účtu.",
         )
-        currency = st.selectbox("Mena účtu", ["EUR", "USD"])
         benchmark_choice = st.selectbox(
             "Benchmark",
             list(BENCHMARK_OPTIONS),
             format_func=lambda ticker: BENCHMARK_OPTIONS[ticker],
-            help="Vyber porovnávací index/ETF alebo zvoľ vlastný ticker Yahoo Finance.",
+            help="Vyber index alebo ETF, podľa ktorého chceš porovnať simulované výsledky.",
         )
-        if benchmark_choice == "custom":
-            benchmark_ticker = st.text_input(
-                "Ticker vlastného benchmarku",
-                placeholder="Napr. EUNL.DE",
-                max_chars=20,
-            ).strip().upper()
-        else:
-            benchmark_ticker = benchmark_choice
+        benchmark_ticker = benchmark_choice
         model_label = st.selectbox("Model scenárov", list(MODELS))
         run_clicked = st.form_submit_button(
             "Spustiť simuláciu",

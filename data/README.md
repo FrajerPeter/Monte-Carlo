@@ -10,6 +10,9 @@ categories. It contains 2,339 search candidates. FinanceDatabase supplies
 capitalization categories rather than an exact numeric global ranking, so this
 is a broad catalog of large companies, not a claim that the rows are the exact
 top 1,000 in current market-cap order. The local CSV does not update itself.
+The snapshot includes 502 listings with FinanceDatabase's `NYQ` exchange code
+(NYSE), including Visa (`V`), JPMorgan Chase (`JPM`), and Coca-Cola (`KO`).
+The app lets users filter the ticker search to these NYSE listings.
 
 The app uses Yahoo Finance symbols and still downloads prices live when a
 simulation runs. Some exchange listings may not have a complete Yahoo Finance
