@@ -1918,7 +1918,7 @@ with st.container(border=True):
         else:
             st.caption(
                 f"Vyhľadávateľný zoznam obsahuje {len(searchable_catalog):,} akcií. "
-                "NYSE tituly zahŕňajú napríklad Visa (V), JPMorgan (JPM) a Coca-Cola (KO)."
+                "Môžeš písať názov firmy alebo ticker a filtrovať zoznam podľa regiónu."
             )
 
     st.caption("Môžeš pridať aj ticker, ktorý nie je v katalógu.")
@@ -2027,12 +2027,18 @@ with st.sidebar:
         )
 
     with st.expander("Pokročilé nastavenia", expanded=False):
+        risk_free_default_pct = 2.4 if currency == "EUR" else 4.3
         risk_free_pct = st.slider(
             "Bezriziková sadzba pre Sharpe (%)",
             min_value=0.0,
             max_value=15.0,
-            value=4.0,
+            value=risk_free_default_pct,
             step=0.25,
+            key=f"risk_free_rate_{currency.lower()}",
+            help=(
+                f"Predvolená orientačná sadzba pre {currency}: "
+                f"{risk_free_default_pct:.1f} %. Môžeš ju upraviť podľa aktuálnej sadzby."
+            ),
         )
         drift_shrinkage_pct = st.slider(
             "Zmenšenie driftu k bezrizikovej sadzbe (%)",
@@ -2087,8 +2093,9 @@ with st.sidebar:
             "Ročný priebežný poplatok (%)",
             min_value=0.0,
             max_value=3.0,
-            value=0.2,
+            value=0.0,
             step=0.1,
+            help="Pri priamych akciách ponechaj 0 %. Pri ETF zadaj jeho ročný priebežný poplatok.",
         )
         spread_slippage_bps = st.number_input(
             "Spread a sklz (bps za jeden smer)", min_value=0, max_value=500,
