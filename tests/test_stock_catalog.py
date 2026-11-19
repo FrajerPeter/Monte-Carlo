@@ -25,6 +25,20 @@ class StockCatalogTests(unittest.TestCase):
         self.assertIn("V", nyse["ticker"].tolist())
         self.assertIn("JPM", nyse["ticker"].tolist())
 
+    def test_catalog_filters_major_exchange_regions(self):
+        for exchange_group in (
+            "Nasdaq",
+            "Európa",
+            "Ázia",
+            "Kanada",
+            "Latinská Amerika",
+            "Oceánia",
+            "Blízky východ a Afrika",
+            "Ostatné",
+        ):
+            with self.subTest(exchange_group=exchange_group):
+                self.assertFalse(filter_stock_catalog(self.catalog, exchange_group).empty)
+
     def test_search_by_company_name_and_ticker(self):
         for query in ("Visa", "V", "Visa (V)"):
             with self.subTest(query=query):

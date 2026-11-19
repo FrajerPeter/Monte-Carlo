@@ -18,6 +18,23 @@ CATALOG_COLUMNS = [
     "market",
     "exchange",
 ]
+EXCHANGE_GROUP_CODES = {
+    "NYSE": {"NYQ"},
+    "Nasdaq": {"NMS", "NGM", "NCM"},
+    "Európa": {
+        "LSE", "GER", "PAR", "EBS", "STO", "AMS", "MIL", "MCE", "CPH",
+        "OSL", "HEL", "WSE", "VIE", "BRU", "ATH", "LIS", "HAM", "BUD",
+        "PRA", "IOB", "MCX",
+    },
+    "Ázia": {
+        "SHH", "SHZ", "JPX", "BSE", "NSE", "HKG", "TAI", "KSC", "KLS",
+        "SES", "SET", "JKT", "TWO", "TLO", "KOE",
+    },
+    "Kanada": {"TOR"},
+    "Latinská Amerika": {"SAO", "MEX", "SGO", "BUE", "BVC"},
+    "Oceánia": {"ASX", "NZE"},
+    "Blízky východ a Afrika": {"SAU", "JNB", "TLV", "DFM", "DOH", "IST", "ISE"},
+}
 
 
 def load_stock_catalog(path: str | Path | None = None) -> pd.DataFrame:
@@ -50,13 +67,20 @@ def load_stock_catalog(path: str | Path | None = None) -> pd.DataFrame:
 
 
 def filter_stock_catalog(catalog: pd.DataFrame, exchange: str | None = None) -> pd.DataFrame:
-    """Filter catalog listings by a readable exchange name or raw exchange code."""
+    """Filter catalog listings by exchange, region, or raw exchange code."""
     if not exchange or exchange.casefold() in {"všetky burzy", "all"}:
         return catalog.copy()
 
-    exchange_codes = {"nyse": "NYQ"}
-    exchange_code = exchange_codes.get(exchange.strip().casefold(), exchange.strip().upper())
-    return catalog.loc[catalog["exchange"].str.upper().eq(exchange_code)].reset_index(drop=True)
+    label = exchange.strip()
+    normalized_codes = catalog["exchange"].astype(str).str.upper()
+    if label == "Ostatné":
+        known_codes = set().union(*EXCHANGE_GROUP_CODES.values())
+        matches = ~normalized_codes.isin(known_codes)
+    elif label in EXCHANGE_GROUP_CODES:
+        matches = normalized_codes.isin(EXCHANGE_GROUP_CODES[label])
+    else:
+        matches = normalized_codes.eq(label.upper())
+    return catalog.loc[matches].reset_index(drop=True)
 
 
 def search_stock_catalog(

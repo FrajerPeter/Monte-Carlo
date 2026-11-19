@@ -28,6 +28,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from stock_catalog import (
+    EXCHANGE_GROUP_CODES,
     add_ticker_symbols,
     filter_stock_catalog,
     load_stock_catalog,
@@ -1876,7 +1877,7 @@ with st.container(border=True):
         with exchange_col:
             catalog_exchange_filter = st.selectbox(
                 "Burza",
-                ["Všetky burzy", "NYSE"],
+                ["Všetky burzy", *EXCHANGE_GROUP_CODES, "Ostatné"],
                 key="catalog_exchange_filter",
             )
         searchable_catalog = filter_stock_catalog(
