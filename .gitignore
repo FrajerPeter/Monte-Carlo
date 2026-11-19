@@ -10,3 +10,4 @@ env/
 .vscode/
 mc_vysledky/
 .env
+.streamlit/secrets.toml

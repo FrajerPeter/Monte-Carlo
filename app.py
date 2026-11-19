@@ -8,6 +8,7 @@ import io
 import html
 import json
 import hashlib
+import logging
 from datetime import datetime
 from pathlib import Path
 import unicodedata
@@ -70,6 +71,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _extract_close(downloaded: pd.DataFrame, symbols: tuple[str, ...]) -> pd.DataFrame:
@@ -2086,9 +2089,11 @@ if run_clicked:
                     "drift_shrinkage_pct": drift_shrinkage_pct,
                     "parameter_uncertainty_pct": parameter_uncertainty_pct,
                 }
-        except Exception as exc:
+        except Exception:
+            LOGGER.exception("Monte Carlo simulation failed")
             st.session_state.pop("analysis", None)
-            st.error(f"Simuláciu sa nepodarilo dokončiť: {exc}")
+            st.error("Simuláciu sa nepodarilo dokončiť. Skontroluj tickery a dostupnosť dát.")
+            st.caption("Podrobnosti chyby sú v logoch aplikácie v Streamlit Community Cloud.")
 
 
 analysis = st.session_state.get("analysis")
