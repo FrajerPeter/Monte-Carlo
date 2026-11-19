@@ -24,7 +24,7 @@ Ak sa Streamlit už inštaloval, vynechať vytvorenie prostredia aj `pip install
 - Katalóg je lokálna snímka z 18. 11. 2026. Obsahuje aktívne primárne záznamy klasifikované ako Mega Cap alebo Large Cap v [FinanceDatabase](https://github.com/JerBouma/FinanceDatabase); nejde o presne zoradený živý rebríček prvých 1 000 podľa kapitalizácie. Podrobnosti sú v `data/README.md`.
 - Vyber benchmark, horizont, menu účtu a počiatočnú investíciu.
 - Vyber 1 000, 5 000 alebo 10 000 simulácií a jeden z piatich modelov.
-- Nastav bezrizikovú sadzbu, zmenšenie historického drifta, neistotu odhadu drifta, rizikový limit, obmedzenia váh a odhad nákladov.
+- Nastav bezrizikovú sadzbu, zmenšenie historického drifta, neistotu odhadu drifta, rizikový limit, obmedzenia váh a odhad nákladov. Náklady môžu zahŕňať províziu, používateľský odhad spreadu/sklzu, priebežný poplatok a ročný obrat ako nákladový proxy pre rebalansovanie. Voliteľná zjednodušená daň sa odpočíta len z kladného konečného zisku.
 - Stlač **Spustiť simuláciu**. Po zmene nastavení klikni znovu, aby sa prepočítali výsledky.
 - Záložky ukazujú akcie a fan chart, štyri portfóliové stratégie, hypotetický a historický stres, porovnanie modelov spätným testom a export.
 
@@ -49,15 +49,16 @@ Fan chart ukazuje až 1 000 sivých ukážkových ciest, 10., 50. a 90. percenti
 - Pravdepodobnosť zisku a párová pravdepodobnosť prekonať benchmark v spoločných simuláciách.
 - Sharpe Ratio a pravdepodobnosť, že maximálny pokles počas celej cesty prekročí používateľský limit.
 - Rovnomerné portfólio, približné maximum Sharpe, minimum volatility a minimum historického CVaR. Váhy sa hľadajú medzi 50 000 náhodnými prípustnými long-only kandidátmi; výsledok nie je garantované globálne optimum.
-- Walk-forward porovnanie každého modelu: 3 roky tréningových dát, 63 obchodných dní prognózy a 21-dňový posun. Zobrazuje pokrytie 10.–90. percentilu, presnosť smeru, chybu mediánu a šírku pásma.
+- Walk-forward porovnanie každého modelu: 3 roky tréningových dát, 63 obchodných dní prognózy a 21-dňový posun. Zobrazuje pokrytie 10.–90. percentilu, presnosť smeru, chybu mediánu a šírku pásma. Tréning končí pred testovacím oknom; model sa porovnáva aj s nulovou prognózou.
+- Citlivosť konečných výnosov na drift, volatilitu a dodatočné náklady, aj portfóliovej volatility pri rôznych korelačných predpokladoch. Tieto tabuľky sú aproximácie, nie nové plné Monte Carlo behy.
 - Hypotetický jednorazový pokles, aj historický najhorší 63-dňový spoločný blok; v historickom teste sa po bloku simuluje zvyšok zvoleného horizontu.
 - Porovnanie rovnomerne váženého portfólia pred a po pridaní vybranej akcie na tých istých simulovaných cestách.
-- Prehľad zdroja, dátumov a počtu spoločných denných pozorovaní; neúplné cenové dátumy sa pri zosúladení vynechávajú.
-- CSV súbory pre akcie, váhy, portfóliá a spätný test; súhrnný PDF report.
+- Prehľad zdroja, čerstvosti a pokrytia jednotlivých tickerov; pri starých dátach alebo nízkom pokrytí sa zobrazí upozornenie.
+- CSV súbory pre akcie, váhy, portfóliá a spätný test, súhrnný PDF report a JSON nastavení so seed-om a SHA-256 odtlačkom dát.
 
 ## Obmedzenia
 
-Yahoo Finance je dátovým zdrojom aplikácie, nie garantovaným produkčným feedom. Dostupnosť a kvalita údajov sa môže meniť. Päť rokov dát neposkytuje dostatok pozorovaní pre každý trhový režim. Modely nepoznajú budúce správy, zmeny fundamentov, likviditu, dane, spread, sklz ani všetky poplatky brokera. Pri 63-dňovom horizonte historického stresového testu tvorí pozorovaný stresový blok celý horizont, a preto v tomto teste nie je náhodná pokračovacia časť. Backtestové okná sa prekrývajú. Heuristický verdikt ani simulácie nie sú investičným odporúčaním a negarantujú budúce výnosy.
+Yahoo Finance je dátovým zdrojom aplikácie, nie garantovaným produkčným feedom. Dostupnosť a kvalita údajov sa môže meniť. Päť rokov dát neposkytuje dostatok pozorovaní pre každý trhový režim. Ročný obrat je iba nákladový proxy; aplikácia neprehráva skutočné rebalansovacie obchody po jednotlivých cestách. Daň je plochá používateľská aproximácia kladného konečného zisku, nie výpočet daňovej povinnosti. Spread a sklz sú používateľský odhad a likvidita sa neoveruje živými objemami. Pri 63-dňovom horizonte historického stresového testu tvorí pozorovaný stresový blok celý horizont. Backtestové okná sa prekrývajú a katalóg dnešných aktívnych firiem neodstraňuje survivorship bias. Heuristický verdikt ani simulácie nie sú investičným odporúčaním a negarantujú budúce výnosy.
 
 ## Testy
 

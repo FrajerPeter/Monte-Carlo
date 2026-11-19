@@ -6,6 +6,8 @@ import math
 import re
 import io
 import html
+import json
+import hashlib
 from datetime import datetime
 from pathlib import Path
 import unicodedata
@@ -37,7 +39,7 @@ BACKTEST_TRAIN_DAYS = 756
 BACKTEST_STEP_DAYS = 21
 BACKTEST_SIMULATIONS = 2_000
 FAN_CHART_PATH_LIMIT = 1_000
-ANALYSIS_SCHEMA_VERSION = 2
+ANALYSIS_SCHEMA_VERSION = 3
 HORIZONS = {
     "3 mesiace": 63,
     "6 mesiacov": 126,
@@ -836,6 +838,104 @@ def verdict(
     return "Neutrálne", "warning"
 
 
+def explain_verdict(
+    median_return: float,
+    probability_profit: float,
+    sharpe: float,
+    probability_drawdown_over_limit: float,
+    var95_loss: float,
+    max_drawdown_limit: float,
+) -> tuple[str, str, list[str]]:
+    """Return a screening label and the exact heuristic checks behind it."""
+    label, level = verdict(
+        median_return, probability_profit, sharpe,
+        probability_drawdown_over_limit, var95_loss, max_drawdown_limit,
+    )
+    checks = [
+        f"Mediánový výnos {median_return:+.1%} (priaznivý prah: nad 0 %): {'splnené' if median_return > 0 else 'nesplnené'}.",
+        f"Pravdepodobnosť zisku {probability_profit:.1%} (priaznivý prah: aspoň 60 %): {'splnené' if probability_profit >= 0.60 else 'nesplnené'}.",
+        f"Sharpe {sharpe:.2f} (priaznivý prah: aspoň 0,50): {'splnené' if sharpe >= 0.50 else 'nesplnené'}.",
+        f"Pravdepodobnosť poklesu nad limit {probability_drawdown_over_limit:.1%} (priaznivý prah: najviac 10 %): {'splnené' if probability_drawdown_over_limit <= 0.10 else 'nesplnené'}.",
+        f"VaR 95 % {var95_loss:.1%}; limit {max_drawdown_limit:.1%}: "
+        f"{'prekročený' if var95_loss > max_drawdown_limit else 'neprekročený'} "
+        "(VaR a maximálny pokles sú odlišné ukazovatele).",
+    ]
+    return label, level, checks
+
+
+def apply_terminal_tax(returns: np.ndarray, tax_rate: float) -> np.ndarray:
+    """Apply a simplified tax only to positive terminal gains."""
+    values = np.asarray(returns, dtype=float)
+    return values - np.maximum(values, 0.0) * float(tax_rate)
+
+
+def make_sensitivity_table(
+    gross_returns: np.ndarray,
+    cost_factor: float,
+    investment: float,
+    horizon_days: int,
+    tax_rate: float = 0.0,
+) -> pd.DataFrame:
+    """Approximate terminal-return sensitivity around the selected simulation."""
+    base_log = np.log1p(np.clip(np.asarray(gross_returns, dtype=float), -0.999999, None))
+    center = float(np.mean(base_log))
+    years = horizon_days / TRADING_DAYS_PER_YEAR
+    cases = [
+        ("Základ", 0.00, 1.00, 0.00),
+        ("Drift −5 p. b.", -0.05, 1.00, 0.00),
+        ("Drift +5 p. b.", 0.05, 1.00, 0.00),
+        ("Volatilita −20 %", 0.00, 0.80, 0.00),
+        ("Volatilita +20 %", 0.00, 1.20, 0.00),
+        ("Náklady +25 bps za smer", 0.00, 1.00, 25.0),
+    ]
+    rows = []
+    for name, drift_shift, vol_scale, added_cost_bps in cases:
+        adjusted_log = center + (base_log - center) * vol_scale + drift_shift * years
+        adjusted_gross = np.expm1(np.clip(adjusted_log, -50, 50))
+        factor = cost_factor * (1.0 - added_cost_bps / 10_000.0) ** 2
+        net = apply_terminal_tax((1.0 + adjusted_gross) * factor - 1.0, tax_rate)
+        var95, cvar95 = _tail_metrics(net)
+        rows.append({
+            "Scenár": name,
+            "Mediánový výnos (%)": float(np.median(net) * 100),
+            "Priemerný výnos (%)": float(np.mean(net) * 100),
+            "VaR 95 % (%)": var95 * 100,
+            "CVaR 95 % (%)": cvar95 * 100,
+            "P. zisku (%)": float(np.mean(net > 0) * 100),
+            "Mediánová hodnota investície": float(np.median(1 + net) * investment),
+        })
+    return pd.DataFrame(rows)
+
+
+def make_correlation_sensitivity(
+    annual_means: np.ndarray,
+    annual_vols: np.ndarray,
+    correlation: np.ndarray,
+    weights: np.ndarray,
+    risk_free_rate: float,
+) -> pd.DataFrame:
+    """Show portfolio risk if historical pairwise correlations weaken or strengthen."""
+    rows = []
+    for name, multiplier in (("Bez korelácií", 0.0), ("Polovica historických", 0.5), ("Historická", 1.0), ("Vyššia (+25 %)", 1.25)):
+        stressed_corr = np.eye(len(annual_vols)) + (correlation - np.eye(len(annual_vols))) * multiplier
+        stressed_corr = (stressed_corr + stressed_corr.T) / 2.0
+        eigenvalues, eigenvectors = np.linalg.eigh(stressed_corr)
+        stressed_corr = (eigenvectors * np.maximum(eigenvalues, 1e-8)) @ eigenvectors.T
+        scales = np.sqrt(np.diag(stressed_corr))
+        stressed_corr = stressed_corr / np.outer(scales, scales)
+        np.fill_diagonal(stressed_corr, 1.0)
+        covariance = np.outer(annual_vols, annual_vols) * stressed_corr
+        annual_return = float(np.asarray(weights) @ annual_means)
+        annual_volatility = float(np.sqrt(max(np.asarray(weights) @ covariance @ np.asarray(weights), 0.0)))
+        rows.append({
+            "Korelačný predpoklad": name,
+            "Odhad výnosu p. a. (%)": annual_return * 100,
+            "Odhad volatility p. a. (%)": annual_volatility * 100,
+            "Sharpe": (annual_return - risk_free_rate) / annual_volatility if annual_volatility > 0 else 0.0,
+        })
+    return pd.DataFrame(rows)
+
+
 def format_money(value: float, symbol: str) -> str:
     return f"{symbol}{value:,.2f}"
 
@@ -909,8 +1009,11 @@ def run_walk_forward_backtest(
                 "Medián odhadu (%)": float(median_forecast * 100),
                 "90. percentil (%)": float(q90 * 100),
                 "Skutočný výnos (%)": float(actual_return * 100),
+                "Nulová prognóza (%)": 0.0,
                 "Pokrytie pásma": bool(q10 <= actual_return <= q90),
                 "Správne určený smer": bool((median_forecast >= 0) == (actual_return >= 0)),
+                "Správny smer nuly": bool(actual_return >= 0),
+                "Absolútna chyba nuly (p. b.)": abs(float(actual_return * 100)),
             }
         )
 
@@ -926,6 +1029,10 @@ def run_walk_forward_backtest(
             )
         ),
         "origins": float(len(backtest)),
+        "zero_direction_accuracy": float(backtest["Správny smer nuly"].mean()),
+        "zero_median_absolute_error_pp": float(
+            np.median(backtest["Absolútna chyba nuly (p. b.)"])
+        ),
     }
     return backtest, metrics
 
@@ -962,6 +1069,8 @@ def run_walk_forward_model_comparison(
                 "Priemerná šírka pásma (p. b.)": float(
                     (forecast["90. percentil (%)"] - forecast["10. percentil (%)"]).mean()
                 ),
+                "Presnosť smeru nuly (%)": metrics["zero_direction_accuracy"] * 100,
+                "Chyba nulovej prognózy (p. b.)": metrics["zero_median_absolute_error_pp"],
                 "Počet období": int(metrics["origins"]),
             }
         )
@@ -1034,10 +1143,10 @@ def make_results(
     spot_rates: dict[str, float],
     fx_stats: dict[str, dict[str, float]],
     horizon_days: int,
+    tax_rate: float = 0.0,
 ) -> pd.DataFrame:
     tickers = simulation["tickers"]
     start_prices = simulation["start_prices"]
-    annual_drift = simulation["annual_drift"]
     annual_volatility = simulation["annual_volatility"]
     terminal_prices = simulation["terminal_prices"]
     max_drawdowns = simulation["max_drawdowns"]
@@ -1046,21 +1155,28 @@ def make_results(
     cost_factor = simulation["net_cost_factor"]
     benchmark_idx = tickers.index(benchmark_ticker)
     benchmark_gross_returns = terminal_prices[:, benchmark_idx] / start_prices[benchmark_idx] - 1.0
-    benchmark_returns = (1.0 + benchmark_gross_returns) * cost_factor - 1.0
+    benchmark_returns = apply_terminal_tax(
+        (1.0 + benchmark_gross_returns) * cost_factor - 1.0, tax_rate
+    )
     years = horizon_days / TRADING_DAYS_PER_YEAR
-    annual_cost_drag = -math.log(cost_factor) / years if years > 0 and cost_factor > 0 else 0.0
     rows = []
 
     for ticker in tracked_tickers:
         idx = tickers.index(ticker)
         gross_returns = terminal_prices[:, idx] / start_prices[idx] - 1.0
-        simulated_returns = (1.0 + gross_returns) * cost_factor - 1.0
+        simulated_returns = apply_terminal_tax(
+            (1.0 + gross_returns) * cost_factor - 1.0, tax_rate
+        )
         var95_loss, cvar95_loss = _tail_metrics(simulated_returns)
-        stress_returns = (1.0 - stress_shock) * (1.0 + gross_returns) * cost_factor - 1.0
+        stress_returns = apply_terminal_tax(
+            (1.0 - stress_shock) * (1.0 + gross_returns) * cost_factor - 1.0,
+            tax_rate,
+        )
         stress_var95, stress_cvar95 = _tail_metrics(stress_returns)
         probability_profit = float(np.mean(simulated_returns > 0))
+        annualized_net_mean = float(np.mean(simulated_returns) / years) if years > 0 else 0.0
         sharpe = (
-            (annual_drift[idx] - annual_cost_drag - risk_free_rate) / annual_volatility[idx]
+            (annualized_net_mean - risk_free_rate) / annual_volatility[idx]
             if annual_volatility[idx] > 0
             else float("nan")
         )
@@ -1121,6 +1237,7 @@ def make_portfolio_summary(
     benchmark_ticker: str,
     stress: bool = False,
     portfolio_kind: str = "equal",
+    tax_rate: float = 0.0,
 ) -> dict[str, float | str]:
     tickers = simulation["tickers"]
     start_prices = simulation["start_prices"]
@@ -1134,6 +1251,7 @@ def make_portfolio_summary(
     stress_shock = simulation["stress_shock"]
     if stress:
         portfolio_returns = (1.0 - stress_shock) * (1.0 + gross_portfolio_returns) * cost_factor - 1.0
+    portfolio_returns = apply_terminal_tax(portfolio_returns, tax_rate)
 
     drawdown_key = "stress_portfolio_drawdowns" if stress else "portfolio_drawdowns"
     max_drawdowns = simulation[drawdown_key][portfolio_kind]
@@ -1155,9 +1273,14 @@ def make_portfolio_summary(
 
     benchmark_idx = tickers.index(benchmark_ticker)
     benchmark_gross_returns = terminal_prices[:, benchmark_idx] / start_prices[benchmark_idx] - 1.0
-    benchmark_returns = (1.0 + benchmark_gross_returns) * cost_factor - 1.0
+    benchmark_returns = apply_terminal_tax(
+        (1.0 + benchmark_gross_returns) * cost_factor - 1.0, tax_rate
+    )
     if stress:
-        benchmark_returns = (1.0 - stress_shock) * (1.0 + benchmark_gross_returns) * cost_factor - 1.0
+        benchmark_returns = apply_terminal_tax(
+            (1.0 - stress_shock) * (1.0 + benchmark_gross_returns) * cost_factor - 1.0,
+            tax_rate,
+        )
     probability_beat = (
         float(np.mean(portfolio_returns > benchmark_returns))
         if benchmark_ticker not in portfolio_tickers
@@ -1811,6 +1934,21 @@ with st.sidebar:
             value=0.2,
             step=0.1,
         )
+        spread_slippage_bps = st.number_input(
+            "Spread a sklz (bps za jeden smer)", min_value=0, max_value=500,
+            value=5, step=1,
+            help="Hrubý odhad dodatočného nákladu pri nákupe aj predaji; nie je to živý spread.",
+        )
+        annual_turnover_pct = st.slider(
+            "Odhadovaný obrat pri ročnom rebalansovaní (%)",
+            min_value=0, max_value=200, value=0, step=10,
+            help="Nákladový proxy: percento portfólia obchodované za rok. 0 % znamená buy-and-hold.",
+        )
+        tax_pct = st.slider(
+            "Zjednodušená daň zo zisku pri predaji (%)",
+            min_value=0.0, max_value=50.0, value=0.0, step=1.0,
+            help="Uplatní sa len na kladný konečný zisk. Skutočné zdanenie závisí od krajiny a situácie.",
+        )
         stress_shock_pct = st.slider(
             "Jednorazový stresový šok (%)", 0, 60, 20, 5
         )
@@ -1833,6 +1971,9 @@ current_signature = (
     float(min_weight_pct / 100.0),
     float(trade_cost_bps),
     float(annual_fee_pct / 100.0),
+    float(spread_slippage_bps),
+    float(annual_turnover_pct),
+    float(tax_pct / 100.0),
     MODELS[model_label],
     float(stress_shock_pct / 100.0),
     chart_ticker,
@@ -1852,6 +1993,12 @@ if run_clicked:
                 market_prices, quote_currencies, spot_rates, fx_stats = download_market_prices(
                     tuple(all_tickers), currency
                 )
+                historical_portfolio_returns = market_prices.loc[:, tickers].pct_change(
+                    fill_method=None
+                ).dropna(how="any")
+                annual_asset_means = historical_portfolio_returns.mean().to_numpy() * TRADING_DAYS_PER_YEAR
+                annual_asset_vols = historical_portfolio_returns.std(ddof=1).to_numpy() * np.sqrt(TRADING_DAYS_PER_YEAR)
+                historical_corr = historical_portfolio_returns.corr().to_numpy()
                 historical_stress = find_worst_historical_block(market_prices, tickers)
                 portfolio_weights, optimization_scores = (
                     optimize_portfolio_weights(
@@ -1862,8 +2009,11 @@ if run_clicked:
                     )
                 )
                 horizon_days = HORIZONS[horizon_label]
-                trade_cost_rate = float(trade_cost_bps / 10_000.0)
+                effective_trade_bps = float(trade_cost_bps + spread_slippage_bps)
+                trade_cost_rate = effective_trade_bps / 10_000.0
                 annual_fee_rate = float(annual_fee_pct / 100.0)
+                rebalance_cost_rate = (effective_trade_bps / 10_000.0) * (annual_turnover_pct / 100.0)
+                annual_fee_rate += rebalance_cost_rate
                 simulation = simulate(
                     market_prices,
                     horizon_days,
@@ -1891,9 +2041,10 @@ if run_clicked:
                     spot_rates,
                     fx_stats,
                     horizon_days,
+                    float(tax_pct / 100.0),
                 )
                 backtest_cost_factor = calculate_net_cost_factor(
-                    trade_cost_bps,
+                    effective_trade_bps,
                     annual_fee_rate,
                     BACKTEST_HORIZON_DAYS,
                 )
@@ -1913,6 +2064,10 @@ if run_clicked:
                     backtest_error = str(exc)
                 st.session_state.analysis = {
                     "signature": current_signature,
+                    "retrieved_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                    "data_sha256": hashlib.sha256(
+                        pd.util.hash_pandas_object(market_prices, index=True).values.tobytes()
+                    ).hexdigest(),
                     "simulation": simulation,
                     "results": result_table,
                     "prices_as_of": market_prices.index[-1].strftime("%Y-%m-%d"),
@@ -1926,10 +2081,17 @@ if run_clicked:
                     "historical_stress": historical_stress,
                     "portfolio_weights": portfolio_weights,
                     "optimization_scores": optimization_scores,
+                    "annual_asset_means": annual_asset_means,
+                    "annual_asset_vols": annual_asset_vols,
+                    "historical_correlation": historical_corr,
                     "backtest": backtest_table,
                     "backtest_metrics": backtest_metrics,
                     "backtest_error": backtest_error,
                     "trade_cost_bps": trade_cost_bps,
+                    "spread_slippage_bps": spread_slippage_bps,
+                    "annual_turnover_pct": annual_turnover_pct,
+                    "tax_pct": tax_pct,
+                    "effective_trade_bps": effective_trade_bps,
                     "annual_fee_pct": annual_fee_pct,
                     "drift_shrinkage_pct": drift_shrinkage_pct,
                     "parameter_uncertainty_pct": parameter_uncertainty_pct,
@@ -1951,7 +2113,10 @@ elif analysis:
     start_price = float(simulation["start_prices"][selected_idx])
     gross_simulated_returns = terminal_prices / start_price - 1.0
     cost_factor = float(simulation["net_cost_factor"])
-    simulated_returns = (1.0 + gross_simulated_returns) * cost_factor - 1.0
+    simulated_returns = apply_terminal_tax(
+        (1.0 + gross_simulated_returns) * cost_factor - 1.0,
+        float(analysis.get("tax_pct", 0.0)) / 100.0,
+    )
     terminal_values = float(investment) * (1.0 + simulated_returns)
     estimated_cost = float(investment) * (1.0 - cost_factor)
     var95_loss = float(selected_row["VaR 95 % (%)"]) / 100.0
@@ -1959,7 +2124,7 @@ elif analysis:
     profit_probability = float(selected_row["Pravdepodobnosť zisku (%)"]) / 100.0
     sharpe = float(selected_row["Sharpe"])
     dd_probability = float(selected_row["P. prekročenia poklesu (%)"]) / 100.0
-    label, level = verdict(
+    label, level, verdict_checks = explain_verdict(
         median_return,
         profit_probability,
         sharpe,
@@ -2038,12 +2203,36 @@ elif analysis:
             help="Pravdepodobnosť, že maximálny prepad od predchádzajúceho vrcholu prekročí limit.",
         )
         st.caption(
-            f"Výsledky zohľadňujú {analysis['trade_cost_bps']} bps za nákup aj predaj a "
+            f"Výsledky zohľadňujú {analysis['trade_cost_bps']} bps provízie + "
+            f"{analysis['spread_slippage_bps']} bps odhad spreadu/sklzu za smer a "
             f"ročný poplatok {analysis['annual_fee_pct']:.1f} %. Pri nulovom pohybe cien "
             f"by odhadované náklady predstavovali približne {format_money(estimated_cost, currency_symbol)}. "
             f"Drift je zmenšený o {analysis['drift_shrinkage_pct']:.0f} % k bezrizikovej sadzbe; "
             f"neistota jeho odhadu je {analysis['parameter_uncertainty_pct']:.0f} %."
         )
+    with st.expander("Prečo vyšlo toto hodnotenie?"):
+        st.markdown("**„Splnené priaznivé prahy“ je iba orientačný filter modelu, nie pokyn na nákup.**")
+        for check in verdict_checks:
+            st.write(f"- {check}")
+        st.caption(
+            "Model nepozná fundamenty, budúce správy ani tvoju finančnú situáciu. Rozhodnutie treba "
+            "overiť aj mimo tejto simulácie."
+        )
+
+    st.subheader("Citlivosť na predpoklady")
+    sensitivity = make_sensitivity_table(
+        gross_simulated_returns,
+        cost_factor,
+        float(investment),
+        HORIZONS[horizon_label],
+        float(analysis.get("tax_pct", 0.0)) / 100.0,
+    )
+    st.dataframe(sensitivity.round(2), width="stretch", hide_index=True)
+    st.caption(
+        "Ide o približnú citlivosť konečných výnosov: mení drift, rozptyl výnosov a náklady na "
+        "spready/sklz. Nejde o nové plné simulácie; neistotu korelácií sleduj najmä v porovnaní "
+        "portfóliových stratégií a stresových scenároch."
+    )
 
     with st.expander("Zdroj a kvalita dát"):
         data_quality = analysis.get("price_data_quality", {})
@@ -2051,6 +2240,15 @@ elif analysis:
         data_cols[0].metric("Spoločné denné pozorovania", f"{analysis['price_observations']:,}")
         data_cols[1].metric("Začiatok dát", analysis["prices_from"])
         data_cols[2].metric("Posledný dostupný deň", analysis["prices_as_of"])
+        st.caption(f"Dáta stiahnuté: {analysis['retrieved_at']} · identifikátor dát SHA-256: {analysis['data_sha256'][:16]}…")
+        latest_data_day = pd.Timestamp(analysis["prices_as_of"]).date()
+        local_today = datetime.now().date()
+        weekday_lag = max(0, len(pd.bdate_range(latest_data_day, local_today)) - 1)
+        if weekday_lag > 5:
+            st.warning(
+                f"Posledný cenový deň je pred {weekday_lag} pracovnými dňami. Skontroluj dostupnosť "
+                "zdroja alebo ticker; sviatky a časové pásma môžu dátum ovplyvniť."
+            )
         st.markdown(
             "- **Ceny a meny:** upravené denné záverečné ceny a historické FX kurzy z Yahoo Finance.\n"
             "- **Katalóg spoločností:** lokálna snímka FinanceDatabase z 18. 11. 2026; nemení sa automaticky.\n"
@@ -2076,7 +2274,7 @@ elif analysis:
                 for ticker, count in data_quality.get("missing_by_ticker", {}).items()
                 if int(count) > 0
             }
-            if missing_prices:
+            if source_rows:
                 coverage_rows = []
                 for ticker, count in data_quality.get("missing_by_ticker", {}).items():
                     count = int(count)
@@ -2084,17 +2282,20 @@ elif analysis:
                         {
                             "Ticker": ticker,
                             "Chýbajúce cenové dni": count,
+                            "Použiteľné zdrojové dni": max(0, source_rows - count),
                             "Pokrytie zdrojových dát (%)": (
                                 100.0 * (source_rows - count) / source_rows if source_rows else float("nan")
                             ),
                         }
                     )
-                st.caption("Úplnosť cien pred zosúladením; chýbajúce dni môžu zahŕňať sviatky búrz.")
+                st.caption("Úplnosť cien pred zosúladením; rozdielne sviatky búrz môžu vyzerať ako chýbajúce dni.")
                 st.dataframe(
                     pd.DataFrame(coverage_rows).round(1),
                     width="stretch",
                     hide_index=True,
                 )
+                if any((source_rows - int(count)) / source_rows < 0.90 for count in data_quality.get("missing_by_ticker", {}).values()):
+                    st.warning("Aspoň jeden ticker má pod 90 % pokrytie zdrojových dát; over jeho históriu a obchodný kalendár.")
             invalid_prices = {
                 ticker: int(count)
                 for ticker, count in data_quality.get("invalid_by_ticker", {}).items()
@@ -2309,6 +2510,7 @@ elif analysis:
                 float(max_drawdown_limit),
                 benchmark_ticker,
                 portfolio_kind=strategy,
+                tax_rate=float(analysis.get("tax_pct", 0.0)) / 100.0,
             )
         portfolio_table = pd.DataFrame(
             [
@@ -2336,6 +2538,11 @@ elif analysis:
             f"min denný CVaR {analysis['optimization_scores']['minimum_daily_cvar']:.2%}. "
             "Váhy sú približné a nie sú zárukou budúcich výsledkov."
         )
+        st.caption(
+            f"Odhad nákladov obsahuje províziu a spread/sklz za obchod; ročný rebalansovací "
+            f"obrat {analysis['annual_turnover_pct']} % sa účtuje ako približný nákladový proxy. "
+            "Aplikácia nevykonáva skutočné obchody ani neoveruje živé objemy a likviditu titulov."
+        )
         st.dataframe(portfolio_table.round(2), width="stretch", hide_index=True)
         weights_table = pd.DataFrame(
             {
@@ -2346,13 +2553,31 @@ elif analysis:
         for strategy, weights in portfolio_weights.items():
             weights_table[f"{PORTFOLIO_STRATEGIES[strategy]} (%)"] = weights * 100
         st.dataframe(weights_table.round(2), width="stretch", hide_index=True)
+        corr_strategy = st.selectbox(
+            "Korelácia použitá v citlivostnom prehľade",
+            list(PORTFOLIO_STRATEGIES),
+            format_func=lambda key: PORTFOLIO_STRATEGIES[key],
+            key="correlation_sensitivity_strategy",
+        )
+        corr_sensitivity = make_correlation_sensitivity(
+            analysis["annual_asset_means"],
+            analysis["annual_asset_vols"],
+            analysis["historical_correlation"],
+            portfolio_weights[corr_strategy],
+            float(risk_free_pct / 100.0),
+        )
+        st.caption("Citlivosť portfóliového rizika pri rôznej sile historických korelácií (kovariančný odhad, nie nová simulácia).")
+        st.dataframe(corr_sensitivity.round(2), width="stretch", hide_index=True)
         portfolio_indices = [simulation["tickers"].index(t) for t in portfolio_tickers]
         gross_asset_return_matrix = (
             simulation["terminal_prices"][:, portfolio_indices]
             / simulation["start_prices"][portfolio_indices]
             - 1.0
         )
-        net_asset_return_matrix = (1.0 + gross_asset_return_matrix) * cost_factor - 1.0
+        net_asset_return_matrix = apply_terminal_tax(
+            (1.0 + gross_asset_return_matrix) * cost_factor - 1.0,
+            float(analysis.get("tax_pct", 0.0)) / 100.0,
+        )
         comparison_strategy = st.selectbox(
             "Porovnať rozdelenie s rovnomerným portfóliom",
             list(PORTFOLIO_STRATEGIES)[1:],
@@ -2377,7 +2602,10 @@ elif analysis:
             f"a potom pokračuje modelom {model_description}. Je to jednoduchý "
             "hypotetický šok, nie konkrétna historická kríza."
         )
-        stressed_asset_returns = (1.0 - shock) * (1.0 + simulated_returns) - 1.0
+        stressed_asset_returns = apply_terminal_tax(
+            (1.0 - shock) * (1.0 + gross_simulated_returns) * cost_factor - 1.0,
+            float(analysis.get("tax_pct", 0.0)) / 100.0,
+        )
         stressed_var, stressed_cvar = _tail_metrics(stressed_asset_returns)
         stress_cols = st.columns(4)
         stress_cols[0].metric("Stresový mediánový výnos", f"{np.median(stressed_asset_returns):+.2%}")
@@ -2407,6 +2635,7 @@ elif analysis:
                 benchmark_ticker,
                 stress=True,
                 portfolio_kind=strategy,
+                tax_rate=float(analysis.get("tax_pct", 0.0)) / 100.0,
             )
             for strategy, weights in portfolio_weights.items()
         }
@@ -2479,14 +2708,16 @@ elif analysis:
         if not backtest_metrics.empty:
             st.caption(
                 f"Každý model používa predchádzajúce 3 roky a predikuje ďalších "
-                f"{BACKTEST_HORIZON_DAYS} obchodných dní. Odhady sa posúvajú o "
+                f"{BACKTEST_HORIZON_DAYS} obchodných dní. Tréningové okno končí pred "
+                "začiatkom testu, takže budúce ceny nevstupujú do odhadu. Odhady sa posúvajú o "
                 f"{BACKTEST_STEP_DAYS} dní; obdobia sa preto prekrývajú."
             )
             st.subheader("Porovnanie modelov na rovnakých dátumoch")
             st.dataframe(backtest_metrics.round(2), width="stretch", hide_index=True)
             st.caption(
                 "Tabuľka ukazuje citlivosť odhadu na voľbu modelu: porovnaj pokrytie pásma a chybu "
-                "mediánu. Širšie pásmo môže zvýšiť pokrytie, ale samo osebe neznamená lepší odhad."
+                "mediánu aj s nulovou prognózou (bez zmeny). Širšie pásmo môže zvýšiť pokrytie, "
+                "ale samo osebe neznamená lepší odhad."
             )
             backtest_model = st.selectbox(
                 "Model zobrazený v grafe spätného testu",
@@ -2521,7 +2752,8 @@ elif analysis:
             st.dataframe(selected_backtest.round(2), width="stretch", hide_index=True)
             st.caption(
                 "Pokrytie je podiel skutočných výsledkov v odhadovanom pásme. Prekrývajúce "
-                "sa obdobia nie sú nezávislé a výsledky backtestu nezaručujú budúcu presnosť."
+                "sa obdobia nie sú nezávislé. Katalóg obsahuje dnešné aktívne firmy, nie historické "
+                "zloženie trhu, preto backtest neodstraňuje survivorship bias. Výsledky nezaručujú budúcu presnosť."
             )
         else:
             st.warning(analysis["backtest_error"] or "Spätný test nie je dostupný.")
@@ -2563,6 +2795,56 @@ elif analysis:
                 mime="text/csv",
                 disabled=analysis["backtest_metrics"].empty,
             )
+            reproducibility = {
+                "app": "Monte Carlo analýza akcií",
+                "model_version": f"{MODELS[model_label]}-v1 / schema-{ANALYSIS_SCHEMA_VERSION}",
+                "schema_version": ANALYSIS_SCHEMA_VERSION,
+                "retrieved_at": analysis["retrieved_at"],
+                "source": "Yahoo Finance; upravené denné ceny a historické FX",
+                "data_sha256": analysis["data_sha256"],
+                "price_data_from": analysis["prices_from"],
+                "price_data_through": analysis["prices_as_of"],
+                "random_seeds": {
+                    "simulation": 42,
+                    "walk_forward_backtest": 431,
+                    "portfolio_candidates": 2026,
+                },
+                "tickers": list(tickers),
+                "chart_ticker": chart_ticker,
+                "benchmark": benchmark_ticker,
+                "horizon_days": HORIZONS[horizon_label],
+                "simulations": n_simulations,
+                "model": MODELS[model_label],
+                "account_currency": currency,
+                "investment": float(investment),
+                "risk_free_rate": float(risk_free_pct / 100.0),
+                "drift_shrinkage": float(drift_shrinkage_pct / 100.0),
+                "parameter_uncertainty": float(parameter_uncertainty_pct / 100.0),
+                "commission_bps_per_side": float(trade_cost_bps),
+                "spread_slippage_bps_per_side": float(spread_slippage_bps),
+                "annual_fee_percent": float(annual_fee_pct),
+                "annual_turnover_assumption_percent": int(annual_turnover_pct),
+                "simplified_positive_gain_tax_percent": float(tax_pct),
+                "max_drawdown_limit": float(max_drawdown_limit),
+                "max_ticker_weight": float(max_weight_pct / 100.0),
+                "min_ticker_weight": float(min_weight_pct / 100.0),
+                "stress_shock_percent": float(stress_shock_pct),
+                "portfolio_weights": {
+                    PORTFOLIO_STRATEGIES[key]: np.asarray(value, dtype=float).tolist()
+                    for key, value in analysis["portfolio_weights"].items()
+                },
+                "limitations": [
+                    "Sensitivity rows are terminal-return approximations, not rerun full simulations.",
+                    "Tax is a user-defined flat rate on positive terminal gains, not tax advice.",
+                    "Turnover is a cost proxy; the model does not simulate actual rebalancing trades.",
+                ],
+            }
+            st.download_button(
+                "JSON — nastavenia a pôvod výpočtu",
+                data=json.dumps(reproducibility, ensure_ascii=False, indent=2).encode("utf-8"),
+                file_name="monte_carlo_nastavenia.json",
+                mime="application/json",
+            )
         report_parameters = {
             "Tickery": ", ".join(tickers),
             "Benchmark": benchmark_ticker,
@@ -2575,7 +2857,12 @@ elif analysis:
             "Mena účtu": currency,
             "Dáta do": analysis["prices_as_of"],
             "Poplatok za obchod": f"{analysis['trade_cost_bps']} bps jedným smerom",
+            "Spread a sklz": f"{analysis['spread_slippage_bps']} bps jedným smerom (odhad)",
             "Ročný poplatok": f"{analysis['annual_fee_pct']:.1f} %",
+            "Rebalansovací obrat": f"{analysis['annual_turnover_pct']} % ročne (nákladový proxy)",
+            "Zjednodušená daň zo zisku": f"{analysis['tax_pct']:.1f} %",
+            "Stiahnuté": analysis["retrieved_at"],
+            "Seed simulácie": "42",
             "Limit váhy tickeru": f"{min_weight_pct}–{max_weight_pct} %",
         }
         pdf_bytes = make_pdf_report(
