@@ -1351,6 +1351,9 @@ def make_fan_chart(
     currency_symbol: str,
 ) -> go.Figure:
     p10, p50, p90 = np.quantile(paths, [0.10, 0.50, 0.90], axis=0)
+    y_min, y_max = np.quantile(paths, [0.005, 0.995])
+    y_pad = max((float(y_max) - float(y_min)) * 0.025, abs(float(p50[-1])) * 0.01, 1e-9)
+    marker_days = np.unique(np.linspace(0, horizon_days, 5, dtype=int))
     days = np.arange(horizon_days + 1)
     sample_count = min(FAN_CHART_PATH_LIMIT, len(paths))
     sample_indices = np.linspace(0, len(paths) - 1, sample_count, dtype=int)
@@ -1365,7 +1368,7 @@ def make_fan_chart(
             x=path_x,
             y=path_y,
             mode="lines",
-            line={"width": 0.65, "color": "rgba(185,190,198,0.09)"},
+            line={"width": 0.55, "color": "rgba(185,190,198,0.045)"},
             name="Simulované cesty",
             showlegend=False,
             hoverinfo="skip",
@@ -1396,9 +1399,29 @@ def make_fan_chart(
             x=days,
             y=p50,
             mode="lines",
-            line={"width": 3.5, "color": "#4f83ff"},
+            line={"width": 8, "color": "rgba(255,255,255,0.9)"},
+            showlegend=False,
+            hoverinfo="skip",
+        )
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=days,
+            y=p50,
+            mode="lines",
+            line={"width": 4.5, "color": "#2ecc71"},
             name="Medián (50. percentil)",
             hovertemplate=f"Deň %{{x}}<br>Cena {currency_symbol}%{{y:,.2f}}<extra>Medián</extra>",
+        )
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=days[marker_days],
+            y=p50[marker_days],
+            mode="markers",
+            marker={"size": 9, "color": "#2ecc71", "line": {"color": "white", "width": 1.5}},
+            showlegend=False,
+            hovertemplate=f"Medián · deň %{{x}}<br>Cena {currency_symbol}%{{y:,.2f}}<extra></extra>",
         )
     )
     figure.update_layout(
@@ -1417,6 +1440,7 @@ def make_fan_chart(
         zeroline=False,
     )
     figure.update_yaxes(
+        range=[float(y_min) - y_pad, float(y_max) + y_pad],
         tickprefix=currency_symbol,
         tickformat=",.0f",
         gridcolor="rgba(128,128,128,0.2)",
@@ -1965,6 +1989,11 @@ with st.container(border=True):
 
 tickers = list(st.session_state.tickers)
 if tickers:
+    if "ANT" in tickers:
+        st.info(
+            "Anthropic (ANT) je čerstvo zalistovaná akcia s veľmi krátkou cenovou históriou. "
+            "Dlhý horizont môže mať málo použiteľných dát a odhad je preto mimoriadne neistý."
+        )
     if st.session_state.get("chart_ticker") not in tickers:
         st.session_state.chart_ticker = tickers[0]
     ticker_col, hint_col = st.columns([1, 2], vertical_alignment="bottom")
@@ -2033,7 +2062,7 @@ with st.sidebar:
             min_value=0.0,
             max_value=15.0,
             value=risk_free_default_pct,
-            step=0.25,
+            step=0.1,
             key=f"risk_free_rate_{currency.lower()}",
             help=(
                 f"Predvolená orientačná sadzba pre {currency}: "
@@ -2640,9 +2669,9 @@ elif analysis:
             )
             st.caption(
                 f"Sivé čiary sú {min(FAN_CHART_PATH_LIMIT, len(simulation['chart_paths'])):,} "
-                "ukážkové simulované cesty. Prerušované čiary označujú 10. a 90. percentil; "
-                "modrá čiara je medián (50. percentil) vypočítaný zo všetkých simulácií. "
-                "Ide o scenáre, nie garantované cenové hranice. Fan chart zobrazuje ceny pred poplatkami."
+                "ukážkové simulované cesty. Zelená čiara a body označujú medián zo všetkých simulácií; "
+                "prerušované čiary sú 10. a 90. percentil. Osa zobrazuje hlavné pásmo cien, "
+                "extrémne scenáre môžu byť mimo nej. Ide o scenáre, nie garantované hranice."
             )
             st.plotly_chart(
                 make_distribution_chart(
